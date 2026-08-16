@@ -7,6 +7,7 @@ namespace Routes {
     constexpr const char* ADMIN = "/admin";                         // GET, senha
     constexpr const char* ADMIN_CONFIG = "/admin/config";           // POST, senha
     constexpr const char* ADMIN_TIME = "/admin/time";                // POST, senha — define o horario atual (sem RTC ainda)
+    constexpr const char* ADMIN_IRRIGATE = "/admin/irrigate";       // POST, senha — abre a valvula agora, por N segundos
     constexpr const char* ADMIN_HISTORY = "/admin/history";         // GET, senha — baixa CSV
     constexpr const char* ADMIN_HISTORY_RESET = "/admin/history/reset"; // POST, senha
 }

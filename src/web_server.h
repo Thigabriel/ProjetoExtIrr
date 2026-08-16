@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ESPAsyncWebServer.h>
+#include <functional>
 
 #include "Config.h"
 
@@ -11,7 +12,10 @@
 // responder e a atualizam (+ Storage::saveConfig) quando /admin/config
 // recebe um POST autenticado. `valveOpen` e `currentMoisturePercent` são só
 // leitura aqui — usados para mostrar o estado ao vivo em /status.
+// `manualIrrigate(durationSec)` é fornecido pelo main.cpp: abre a válvula e
+// registra um HistoryEntry com TriggerReason::MANUAL.
 namespace WebServer {
     void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOpen,
-               const uint8_t& currentMoisturePercent);
+               const uint8_t& currentMoisturePercent,
+               std::function<void(uint16_t durationSec)> manualIrrigate);
 }

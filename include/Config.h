@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-constexpr uint8_t MAX_SCHEDULE_SLOTS = 4;
+constexpr uint8_t MAX_SCHEDULE_SLOTS = 2;
 constexpr uint8_t ADMIN_PASSWORD_MAX_LEN = 32;
 
 struct ScheduleSlot {

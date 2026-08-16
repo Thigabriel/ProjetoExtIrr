@@ -143,7 +143,12 @@ String buildStatusHtml() {
         "<script>"
         "function pad(n){return String(n).padStart(2,'0');}"
         "function fmtTime(s){var h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60;return pad(h)+':'+pad(m);}"
-        "function fmtEpoch(e){if(!e)return '--';var d=new Date(e*1000);return d.toLocaleString();}"
+        // new Date(e*1000).toLocaleString() aplica o fuso horario REAL do
+        // navegador, mas o epoch aqui e' um relogio "ingenuo" (definido via
+        // /admin/time sem conversao de fuso). Por isso usamos os getters
+        // *UTC* do Date, que leem os campos de volta sem aplicar deslocamento.
+        "function fmtEpoch(e){if(!e)return '--';var d=new Date(e*1000);"
+        "return pad(d.getUTCDate())+'/'+pad(d.getUTCMonth()+1)+'/'+d.getUTCFullYear()+' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());}"
         "function reasonLabel(r){return {SCHEDULE:'Irrigou',MANUAL:'Manual',SKIPPED:'Pulou (solo umido)'}[r]||r;}"
         "function refresh(){"
         "fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
@@ -188,6 +193,15 @@ String buildAdminFormHtml(const IrrigationConfig& config) {
         "<label>Data e hora atuais</label>"
         "<input type=\"datetime-local\" name=\"datetime\" required>"
         "<button type=\"submit\">Definir horario</button>"
+        "</form></div>"
+
+        "<div class=\"card\"><h2>Irrigacao manual</h2>"
+        "<p class=\"muted\">Abre a valvula agora, pelo tempo indicado, sem esperar horario nem checar limiar.</p>"
+        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_IRRIGATE) + "\">"
+        "<label>Duracao (segundos)</label>"
+        "<input type=\"number\" min=\"1\" max=\"3600\" name=\"durationSec\" value=\"" +
+        String(config.irrigationDurationSec) + "\">"
+        "<button type=\"submit\">Irrigar agora</button>"
         "</form></div>"
 
         "<div class=\"card\"><form method=\"POST\" action=\"" + String(Routes::ADMIN_CONFIG) + "\">"
@@ -241,13 +255,26 @@ String buildAdminFormHtml(const IrrigationConfig& config) {
     return html;
 }
 
+// Mesma convenção do relógio do sistema (sem TZ, sem RTC): trata o epoch
+// como campos de calendário "ingênuos" via gmtime_r, sem aplicar fuso —
+// consistente com o que foi digitado em /admin/time.
+String formatDateTime(uint32_t timestamp) {
+    time_t t = static_cast<time_t>(timestamp);
+    struct tm timeinfo;
+    gmtime_r(&t, &timeinfo);
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%02d/%02d/%04d %02d:%02d", timeinfo.tm_mday, timeinfo.tm_mon + 1,
+             timeinfo.tm_year + 1900, timeinfo.tm_hour, timeinfo.tm_min);
+    return String(buf);
+}
+
 String buildHistoryCsv() {
-    String csv = "timestamp,moisturePercent,irrigated,durationSec,reason\n";
+    String csv = "data_hora,moisturePercent,irrigated,durationSec,reason\n";
     size_t count = historyCount();
     HistoryEntry entry;
     for (size_t i = 0; i < count; i++) {
         if (!readHistoryEntry(i, entry)) continue;
-        csv += String(entry.timestamp) + "," +
+        csv += formatDateTime(entry.timestamp) + "," +
                String(entry.moisturePercent) + "," +
                (entry.irrigated ? "1" : "0") + "," +
                String(entry.durationSec) + "," +
@@ -338,7 +365,7 @@ bool applySystemTimeFromDatetimeLocal(const String& value) {
 namespace WebServer {
 
 void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOpen,
-           const uint8_t& currentMoisturePercent) {
+           const uint8_t& currentMoisturePercent, std::function<void(uint16_t)> manualIrrigate) {
     // AsyncURIMatcher::exact() é necessário aqui: o construtor implícito a
     // partir de const char* usa o modo "BackwardCompatible" da lib, que
     // casa "/admin" com QUALQUER coisa começando com "/admin/" — sem isso,
@@ -378,6 +405,17 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
         }
         request->redirect(Routes::ADMIN);
     });
+
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_IRRIGATE), HTTP_POST,
+              [&config, manualIrrigate](AsyncWebServerRequest* request) {
+                  if (!requireAuth(request, config)) return;
+                  uint16_t duration = config.irrigationDurationSec;
+                  if (request->hasParam("durationSec", true)) {
+                      duration = clampU16(request->getParam("durationSec", true)->value().toInt(), 1, 3600);
+                  }
+                  manualIrrigate(duration);
+                  request->redirect(Routes::ADMIN);
+              });
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY), HTTP_GET, [&config](AsyncWebServerRequest* request) {
         if (!requireAuth(request, config)) return;

@@ -69,6 +69,20 @@ void updateValve() {
     }
 }
 
+// Acionamento manual via /admin/irrigate — ignora horário e limiar.
+void manualIrrigate(uint16_t durationSec) {
+    openValve(durationSec);
+    Serial.printf("[irrigacao] manual: abrindo valvula por %us\n", durationSec);
+
+    HistoryEntry entry;
+    entry.timestamp = static_cast<uint32_t>(time(nullptr));
+    entry.moisturePercent = currentMoisturePercent;
+    entry.irrigated = true;
+    entry.durationSec = durationSec;
+    entry.reason = TriggerReason::MANUAL;
+    appendHistoryEntry(entry);
+}
+
 // Avalia a decisão de irrigação uma vez por minuto (não uma vez por
 // segundo): decideIrrigation() casa o slot pelo minuto inteiro, então sem
 // essa deduplicação por chave de minuto o mesmo evento seria reavaliado e
@@ -118,7 +132,7 @@ void setup() {
     loadConfig(config);
 
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    WebServer::begin(server, config, valveOpen, currentMoisturePercent);
+    WebServer::begin(server, config, valveOpen, currentMoisturePercent, manualIrrigate);
     server.begin();
 
     Serial.printf("[boot] AP \"%s\" ativo, IP %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
