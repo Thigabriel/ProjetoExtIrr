@@ -184,16 +184,21 @@ void applyConfigFromRequest(AsyncWebServerRequest* request, IrrigationConfig& co
 namespace WebServer {
 
 void begin(AsyncWebServer& server, IrrigationConfig& config) {
-    server.on(Routes::STATUS, HTTP_GET, [&config](AsyncWebServerRequest* request) {
+    // AsyncURIMatcher::exact() é necessário aqui: o construtor implícito a
+    // partir de const char* usa o modo "BackwardCompatible" da lib, que
+    // casa "/admin" com QUALQUER coisa começando com "/admin/" — sem isso,
+    // a rota "/admin" (registrada primeiro) intercepta "/admin/config" e
+    // "/admin/history" antes deles serem alcançados.
+    server.on(AsyncURIMatcher::exact(Routes::STATUS), HTTP_GET, [&config](AsyncWebServerRequest* request) {
         request->send(200, "application/json", buildStatusJson(config));
     });
 
-    server.on(Routes::ADMIN, HTTP_GET, [&config](AsyncWebServerRequest* request) {
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN), HTTP_GET, [&config](AsyncWebServerRequest* request) {
         if (!requireAuth(request, config)) return;
         request->send(200, "text/html", buildAdminFormHtml(config));
     });
 
-    server.on(Routes::ADMIN_CONFIG, HTTP_POST, [&config](AsyncWebServerRequest* request) {
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_CONFIG), HTTP_POST, [&config](AsyncWebServerRequest* request) {
         if (!requireAuth(request, config)) return;
         applyConfigFromRequest(request, config);
         if (!saveConfig(config)) {
@@ -203,7 +208,7 @@ void begin(AsyncWebServer& server, IrrigationConfig& config) {
         request->redirect(Routes::ADMIN);
     });
 
-    server.on(Routes::ADMIN_HISTORY, HTTP_GET, [&config](AsyncWebServerRequest* request) {
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY), HTTP_GET, [&config](AsyncWebServerRequest* request) {
         if (!requireAuth(request, config)) return;
         AsyncWebServerResponse* response =
             request->beginResponse(200, "text/csv", buildHistoryCsv());
@@ -211,7 +216,7 @@ void begin(AsyncWebServer& server, IrrigationConfig& config) {
         request->send(response);
     });
 
-    server.on(Routes::ADMIN_HISTORY_RESET, HTTP_POST, [&config](AsyncWebServerRequest* request) {
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY_RESET), HTTP_POST, [&config](AsyncWebServerRequest* request) {
         if (!requireAuth(request, config)) return;
         if (!clearHistory()) {
             request->send(500, "text/plain", "Falha ao zerar historico");
