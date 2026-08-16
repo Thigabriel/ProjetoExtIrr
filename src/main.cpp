@@ -28,6 +28,7 @@ IrrigationConfig config;
 bool valveOpen = false;
 unsigned long valveOpenedAtMs = 0;
 uint16_t valveDurationSec = 0;
+uint8_t currentMoisturePercent = 0;
 
 uint8_t readMoisturePercent() {
     int raw = analogRead(MOISTURE_SENSOR_PIN);
@@ -73,14 +74,13 @@ void updateValve() {
 // essa deduplicação por chave de minuto o mesmo evento seria reavaliado e
 // regravado no histórico repetidamente enquanto o relógio permanece naquele
 // minuto.
-void evaluateIrrigation() {
+void evaluateIrrigation(uint8_t moisture) {
     uint8_t hour, minute;
     getCurrentTime(hour, minute);
 
     static int16_t lastMatchedMinuteKey = -1;
     int16_t currentMinuteKey = static_cast<int16_t>(hour) * 60 + minute;
 
-    uint8_t moisture = readMoisturePercent();
     IrrigationDecision decision = decideIrrigation(config, moisture, hour, minute);
 
     if (!decision.scheduleMatched || currentMinuteKey == lastMatchedMinuteKey) {
@@ -118,7 +118,7 @@ void setup() {
     loadConfig(config);
 
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    WebServer::begin(server, config);
+    WebServer::begin(server, config, valveOpen, currentMoisturePercent);
     server.begin();
 
     Serial.printf("[boot] AP \"%s\" ativo, IP %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
@@ -131,6 +131,7 @@ void loop() {
     unsigned long nowMs = millis();
     if (nowMs - lastEvalMs >= 1000) {
         lastEvalMs = nowMs;
-        evaluateIrrigation();
+        currentMoisturePercent = readMoisturePercent();
+        evaluateIrrigation(currentMoisturePercent);
     }
 }
