@@ -1,0 +1,7 @@
+# Ferramentas Python auxiliares deste projeto (não fazem parte do firmware).
+#
+# O firmware em si é C++ (PlatformIO/Arduino) — as dependências de biblioteca
+# do ESP32 ficam declaradas em platformio.ini, não aqui. Este arquivo cobre
+# só os scripts locais de apoio (geração dos QR codes em docs/).
+
+qrcode[pil]==8.2
