@@ -12,16 +12,6 @@
 
 namespace {
 
-// Autenticação HTTP Basic: usuário fixo "admin", senha = IrrigationConfig.adminPassword.
-// Único par usuário/senha do sistema — ver include/Config.h (ADMIN_PASSWORD_MAX_LEN).
-bool requireAuth(AsyncWebServerRequest* request, const IrrigationConfig& config) {
-    if (request->authenticate("admin", config.adminPassword)) {
-        return true;
-    }
-    request->requestAuthentication("admin");
-    return false;
-}
-
 const char* reasonToString(TriggerReason reason) {
     switch (reason) {
         case TriggerReason::SCHEDULE:
@@ -30,6 +20,12 @@ const char* reasonToString(TriggerReason reason) {
             return "MANUAL";
         case TriggerReason::SKIPPED:
             return "SKIPPED";
+        case TriggerReason::BLOCKED_COOLDOWN:
+            return "BLOCKED_COOLDOWN";
+        case TriggerReason::BLOCKED_DAILY_BUDGET:
+            return "BLOCKED_DAILY_BUDGET";
+        case TriggerReason::EMERGENCY_STOP:
+            return "EMERGENCY_STOP";
     }
     return "UNKNOWN";
 }
@@ -62,7 +58,7 @@ constexpr const char* PAGE_STYLE =
     ".stat span:first-child{color:var(--muted)}"
     ".stat span:last-child{font-weight:600;text-align:right}"
     "label{display:block;font-size:.85rem;color:var(--muted);margin:12px 0 4px}"
-    "input[type=number],input[type=password],input[type=datetime-local]{"
+    "input[type=number],input[type=datetime-local]{"
     "width:100%;padding:10px 12px;border:1px solid #d6ddd8;border-radius:10px;font-size:1rem;background:#fbfcfb}"
     ".slot{border:1px solid #e3e8e4;border-radius:12px;padding:10px 12px;margin-bottom:8px;"
     "display:flex;align-items:center;gap:10px;flex-wrap:wrap}"
@@ -82,10 +78,10 @@ String htmlHead(const char* title) {
            title + "</title>" + PAGE_STYLE;
 }
 
-String buildStatusJson(const IrrigationConfig& config, bool valveOpen, uint8_t currentMoisture) {
+String buildStatusJson(const IrrigationConfig& config, bool valveOpen, bool storageFault) {
     String json = "{\"valveOpen\":" + String(valveOpen ? "true" : "false") +
-                  ",\"currentMoisturePercent\":" + String(currentMoisture) +
                   ",\"currentEpoch\":" + String(static_cast<uint32_t>(time(nullptr))) +
+                  ",\"storageFault\":" + (storageFault ? "true" : "false") +
                   ",\"config\":{\"schedules\":[";
     for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
         const ScheduleSlot& slot = config.schedules[i];
@@ -95,18 +91,13 @@ String buildStatusJson(const IrrigationConfig& config, bool valveOpen, uint8_t c
                 ",\"enabled\":" + (slot.enabled ? "true" : "false") + "}";
     }
     json += "],\"scheduleCount\":" + String(config.scheduleCount) +
-            ",\"moistureThreshold\":" + String(config.moistureThreshold) +
-            ",\"useThreshold\":" + (config.useThreshold ? "true" : "false") +
             ",\"irrigationDurationSec\":" + String(config.irrigationDurationSec) +
-            ",\"sensorDryRaw\":" + String(config.sensorDryRaw) +
-            ",\"sensorWetRaw\":" + String(config.sensorWetRaw) +
             "}";
 
     size_t count = historyCount();
     HistoryEntry lastEntry;
     if (count > 0 && readHistoryEntry(count - 1, lastEntry)) {
         json += ",\"lastEntry\":{\"timestamp\":" + String(lastEntry.timestamp) +
-                ",\"moisturePercent\":" + String(lastEntry.moisturePercent) +
                 ",\"irrigated\":" + (lastEntry.irrigated ? "true" : "false") +
                 ",\"durationSec\":" + String(lastEntry.durationSec) +
                 ",\"reason\":\"" + reasonToString(lastEntry.reason) + "\"}";
@@ -122,17 +113,20 @@ String buildStatusHtml() {
         "</head><body>"
         "<header><h1>Irrigacao Comunitaria</h1><p>Horta local</p></header>"
         "<main>"
+        "<div id=\"faultCard\" class=\"card\" style=\"display:none;border:2px solid var(--danger);\">"
+        "<h2 style=\"color:var(--danger)\">Falha detectada</h2>"
+        "<p>O sistema encontrou um problema de armazenamento e pode nao estar funcionando "
+        "corretamente. Entre em contato com o professor responsavel pelo projeto.</p>"
+        "</div>"
         "<div class=\"card\" style=\"text-align:center\">"
         "<span id=\"valveBadge\" class=\"badge off\"><span class=\"dot\"></span>"
         "<span id=\"valveText\">Carregando...</span></span>"
         "</div>"
-        "<div class=\"card\"><h2>Leitura atual</h2>"
-        "<div class=\"stat\"><span>Umidade do solo</span><span id=\"moisture\">--</span></div>"
-        "<div class=\"stat\"><span>Horario do sistema</span><span id=\"now\">--</span></div>"
+        "<div class=\"card\"><h2>Horario do sistema</h2>"
+        "<div class=\"stat\"><span>Agora</span><span id=\"now\">--</span></div>"
         "</div>"
         "<div class=\"card\"><h2>Ultimo evento registrado</h2>"
         "<div class=\"stat\"><span>Quando</span><span id=\"lastWhen\">--</span></div>"
-        "<div class=\"stat\"><span>Umidade na hora</span><span id=\"lastMoisture\">--</span></div>"
         "<div class=\"stat\"><span>Resultado</span><span id=\"lastResult\">--</span></div>"
         "</div>"
         "<div class=\"card\"><h2>Horarios programados</h2>"
@@ -149,21 +143,21 @@ String buildStatusHtml() {
         // *UTC* do Date, que leem os campos de volta sem aplicar deslocamento.
         "function fmtEpoch(e){if(!e)return '--';var d=new Date(e*1000);"
         "return pad(d.getUTCDate())+'/'+pad(d.getUTCMonth()+1)+'/'+d.getUTCFullYear()+' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());}"
-        "function reasonLabel(r){return {SCHEDULE:'Irrigou',MANUAL:'Manual',SKIPPED:'Pulou (solo umido)'}[r]||r;}"
+        "function reasonLabel(r){return {SCHEDULE:'Irrigou (horario)',MANUAL:'Manual',"
+        "BLOCKED_COOLDOWN:'Bloqueado (cooldown)',BLOCKED_DAILY_BUDGET:'Bloqueado (orcamento diario)',"
+        "EMERGENCY_STOP:'Parada de emergencia'}[r]||r;}"
         "function refresh(){"
         "fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
+        "document.getElementById('faultCard').style.display=d.storageFault?'block':'none';"
         "var badge=document.getElementById('valveBadge');"
         "badge.className='badge '+(d.valveOpen?'on':'off');"
         "document.getElementById('valveText').textContent=d.valveOpen?'Irrigando agora':'Aguardando';"
-        "document.getElementById('moisture').textContent=d.currentMoisturePercent+'%';"
         "document.getElementById('now').textContent=fmtTime(d.currentEpoch);"
         "if(d.lastEntry){"
         "document.getElementById('lastWhen').textContent=fmtEpoch(d.lastEntry.timestamp);"
-        "document.getElementById('lastMoisture').textContent=d.lastEntry.moisturePercent+'%';"
         "document.getElementById('lastResult').textContent=reasonLabel(d.lastEntry.reason);"
         "}else{"
         "document.getElementById('lastWhen').textContent='Nenhum evento ainda';"
-        "document.getElementById('lastMoisture').textContent='--';"
         "document.getElementById('lastResult').textContent='--';"
         "}"
         "var s='';"
@@ -180,12 +174,28 @@ String buildStatusHtml() {
     return html;
 }
 
-String buildAdminFormHtml(const IrrigationConfig& config) {
+String buildAdminFormHtml(const IrrigationConfig& config, const String& notice) {
+    bool anyScheduleActive = false;
+    for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
+        if (config.schedules[i].enabled) anyScheduleActive = true;
+    }
+
     String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Admin") +
         "</head><body>"
         "<header><h1>Administracao</h1><p>Irrigacao Comunitaria</p></header>"
-        "<main>"
+        "<main>";
 
+    if (notice.length() > 0) {
+        html += "<div class=\"card\" style=\"border:2px solid var(--danger);\"><p style=\"margin:0\">" +
+                notice + "</p></div>";
+    }
+    if (!anyScheduleActive) {
+        html += "<div class=\"card\"><p class=\"muted\" style=\"margin:0\">Nenhum horario de irrigacao "
+                "ativo no momento — o sistema nao vai irrigar automaticamente ate um horario ser "
+                "habilitado abaixo.</p></div>";
+    }
+
+    html +=
         "<div class=\"card\"><h2>Horario do sistema</h2>"
         "<p class=\"muted\">Sem RTC ainda: defina a hora atual manualmente. Ela reinicia toda vez "
         "que o ESP32 desliga ou reseta.</p>"
@@ -196,13 +206,19 @@ String buildAdminFormHtml(const IrrigationConfig& config) {
         "</form></div>"
 
         "<div class=\"card\"><h2>Irrigacao manual</h2>"
-        "<p class=\"muted\">Abre a valvula agora, pelo tempo indicado, sem esperar horario nem checar limiar.</p>"
+        "<p class=\"muted\">Abre a valvula agora, pelo tempo indicado (maximo " +
+        String(MAX_IRRIGATION_DURATION_SEC) +
+        "s), sem esperar horario. Sujeita ao cooldown e ao orcamento diario.</p>"
         "<form method=\"POST\" action=\"" + String(Routes::ADMIN_IRRIGATE) + "\">"
         "<label>Duracao (segundos)</label>"
-        "<input type=\"number\" min=\"1\" max=\"3600\" name=\"durationSec\" value=\"" +
-        String(config.irrigationDurationSec) + "\">"
+        "<input type=\"number\" min=\"1\" max=\"" + String(MAX_IRRIGATION_DURATION_SEC) +
+        "\" name=\"durationSec\" value=\"" + String(config.irrigationDurationSec) + "\">"
         "<button type=\"submit\">Irrigar agora</button>"
-        "</form></div>"
+        "</form>"
+        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_STOP) +
+        "\" onsubmit=\"return confirm('Fechar a valvula agora?');\">"
+        "<button type=\"submit\" class=\"danger\">Parar irrigacao agora</button></form>"
+        "</div>"
 
         "<div class=\"card\"><form method=\"POST\" action=\"" + String(Routes::ADMIN_CONFIG) + "\">"
         "<h2>Horarios de irrigacao</h2>";
@@ -219,28 +235,10 @@ String buildAdminFormHtml(const IrrigationConfig& config) {
                 (slot.enabled ? " checked" : "") + "> Slot " + String(i) + " ativo</label></div>";
     }
 
-    html += "<h2>Limiar de umidade</h2>"
-            "<label class=\"chk\"><input type=\"checkbox\" name=\"useThreshold\"" +
-            String(config.useThreshold ? " checked" : "") +
-            "> Usar limiar (nao irrigar se o solo ja estiver umido)</label>"
-            "<label>Limiar (%)</label>"
-            "<input type=\"number\" min=\"0\" max=\"100\" name=\"moistureThreshold\" value=\"" +
-            String(config.moistureThreshold) + "\">"
-            "<h2>Duracao da irrigacao</h2>"
-            "<label>Duracao (segundos)</label>"
-            "<input type=\"number\" min=\"0\" name=\"irrigationDurationSec\" value=\"" +
-            String(config.irrigationDurationSec) + "\">"
-            "<h2>Calibracao do sensor</h2>"
-            "<label>Leitura seco (raw)</label>"
-            "<input type=\"number\" min=\"0\" name=\"sensorDryRaw\" value=\"" +
-            String(config.sensorDryRaw) + "\">"
-            "<label>Leitura molhado (raw)</label>"
-            "<input type=\"number\" min=\"0\" name=\"sensorWetRaw\" value=\"" +
-            String(config.sensorWetRaw) + "\">"
-            "<h2>Senha de admin</h2>"
-            "<label>Nova senha (em branco = manter a atual)</label>"
-            "<input type=\"password\" name=\"adminPassword\" maxlength=\"" +
-            String(ADMIN_PASSWORD_MAX_LEN - 1) + "\">"
+    html += "<h2>Duracao da irrigacao</h2>"
+            "<label>Duracao (segundos, maximo " + String(MAX_IRRIGATION_DURATION_SEC) + ")</label>"
+            "<input type=\"number\" min=\"0\" max=\"" + String(MAX_IRRIGATION_DURATION_SEC) +
+            "\" name=\"irrigationDurationSec\" value=\"" + String(config.irrigationDurationSec) + "\">"
             "<button type=\"submit\">Salvar</button>"
             "</form></div>"
 
@@ -269,13 +267,12 @@ String formatDateTime(uint32_t timestamp) {
 }
 
 String buildHistoryCsv() {
-    String csv = "data_hora,moisturePercent,irrigated,durationSec,reason\n";
+    String csv = "data_hora,irrigated,durationSec,reason\n";
     size_t count = historyCount();
     HistoryEntry entry;
     for (size_t i = 0; i < count; i++) {
         if (!readHistoryEntry(i, entry)) continue;
         csv += formatDateTime(entry.timestamp) + "," +
-               String(entry.moisturePercent) + "," +
                (entry.irrigated ? "1" : "0") + "," +
                String(entry.durationSec) + "," +
                reasonToString(entry.reason) + "\n";
@@ -311,30 +308,29 @@ void applyConfigFromRequest(AsyncWebServerRequest* request, IrrigationConfig& co
     }
     config.scheduleCount = MAX_SCHEDULE_SLOTS;
 
-    config.useThreshold = request->hasParam("useThreshold", true);
-    if (request->hasParam("moistureThreshold", true)) {
-        config.moistureThreshold =
-            clampU8(request->getParam("moistureThreshold", true)->value().toInt(), 0, 100);
-    }
     if (request->hasParam("irrigationDurationSec", true)) {
-        config.irrigationDurationSec =
-            clampU16(request->getParam("irrigationDurationSec", true)->value().toInt(), 0, 65535);
+        config.irrigationDurationSec = clampU16(
+            request->getParam("irrigationDurationSec", true)->value().toInt(), 0, MAX_IRRIGATION_DURATION_SEC);
     }
-    if (request->hasParam("sensorDryRaw", true)) {
-        config.sensorDryRaw = clampU16(request->getParam("sensorDryRaw", true)->value().toInt(), 0, 65535);
-    }
-    if (request->hasParam("sensorWetRaw", true)) {
-        config.sensorWetRaw = clampU16(request->getParam("sensorWetRaw", true)->value().toInt(), 0, 65535);
-    }
+}
 
-    // Campo em branco = mantém a senha atual (o form nunca ecoa a senha existente).
-    if (request->hasParam("adminPassword", true)) {
-        const String& newPassword = request->getParam("adminPassword", true)->value();
-        if (newPassword.length() > 0) {
-            strncpy(config.adminPassword, newPassword.c_str(), ADMIN_PASSWORD_MAX_LEN - 1);
-            config.adminPassword[ADMIN_PASSWORD_MAX_LEN - 1] = '\0';
-        }
-    }
+bool isLeapYear(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+// Valida os campos de calendário antes de aceitar — mktime() normaliza datas
+// fora da faixa (ex: 31/02 vira 03/03) em vez de rejeitar, então a checagem
+// de faixa precisa acontecer antes de chamar mktime().
+bool isValidCalendarDateTime(int year, int month, int day, int hour, int minute) {
+    if (year < 2000 || year > 2099) return false;
+    if (month < 1 || month > 12) return false;
+    static const uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    uint8_t maxDay = daysInMonth[month - 1];
+    if (month == 2 && isLeapYear(year)) maxDay = 29;
+    if (day < 1 || day > maxDay) return false;
+    if (hour < 0 || hour > 23) return false;
+    if (minute < 0 || minute > 59) return false;
+    return true;
 }
 
 // Aplica o horário digitado em /admin ("YYYY-MM-DDTHH:MM", vindo direto do
@@ -343,6 +339,9 @@ void applyConfigFromRequest(AsyncWebServerRequest* request, IrrigationConfig& co
 bool applySystemTimeFromDatetimeLocal(const String& value) {
     int year, month, day, hour, minute;
     if (sscanf(value.c_str(), "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) != 5) {
+        return false;
+    }
+    if (!isValidCalendarDateTime(year, month, day, hour, minute)) {
         return false;
     }
     struct tm timeinfo = {};
@@ -360,12 +359,26 @@ bool applySystemTimeFromDatetimeLocal(const String& value) {
     return settimeofday(&tv, nullptr) == 0;
 }
 
+// Mapeia o motivo de bloqueio de uma tentativa de irrigação manual para uma
+// mensagem legível, exibida como aviso no topo de /admin após o redirect.
+String blockedNoticeFromQueryValue(const String& value) {
+    if (value == "cooldown") {
+        return "Irrigacao manual recusada: aguarde o intervalo minimo entre acionamentos (cooldown de " +
+               String(IRRIGATION_COOLDOWN_SEC) + "s).";
+    }
+    if (value == "budget") {
+        return "Irrigacao manual recusada: orcamento diario de agua ja foi atingido. Tente novamente amanha.";
+    }
+    return "";
+}
+
 }  // namespace
 
 namespace WebServer {
 
-void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOpen,
-           const uint8_t& currentMoisturePercent, std::function<void(uint16_t)> manualIrrigate) {
+void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOpen, bool& storageFault,
+           std::function<ManualIrrigateResult(uint16_t)> manualIrrigate,
+           std::function<void()> stopIrrigation) {
     // AsyncURIMatcher::exact() é necessário aqui: o construtor implícito a
     // partir de const char* usa o modo "BackwardCompatible" da lib, que
     // casa "/admin" com QUALQUER coisa começando com "/admin/" — sem isso,
@@ -376,28 +389,30 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
     });
 
     server.on(AsyncURIMatcher::exact(Routes::STATUS_JSON), HTTP_GET,
-              [&config, &valveOpen, &currentMoisturePercent](AsyncWebServerRequest* request) {
-                  request->send(200, "application/json",
-                                buildStatusJson(config, valveOpen, currentMoisturePercent));
+              [&config, &valveOpen, &storageFault](AsyncWebServerRequest* request) {
+                  request->send(200, "application/json", buildStatusJson(config, valveOpen, storageFault));
               });
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN), HTTP_GET, [&config](AsyncWebServerRequest* request) {
-        if (!requireAuth(request, config)) return;
-        request->send(200, "text/html", buildAdminFormHtml(config));
-    });
-
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_CONFIG), HTTP_POST, [&config](AsyncWebServerRequest* request) {
-        if (!requireAuth(request, config)) return;
-        applyConfigFromRequest(request, config);
-        if (!saveConfig(config)) {
-            request->send(500, "text/plain", "Falha ao salvar configuracao");
-            return;
+        String notice;
+        if (request->hasParam("blocked")) {
+            notice = blockedNoticeFromQueryValue(request->getParam("blocked")->value());
         }
-        request->redirect(Routes::ADMIN);
+        request->send(200, "text/html", buildAdminFormHtml(config, notice));
     });
 
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_TIME), HTTP_POST, [&config](AsyncWebServerRequest* request) {
-        if (!requireAuth(request, config)) return;
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_CONFIG), HTTP_POST,
+              [&config, &storageFault](AsyncWebServerRequest* request) {
+                  applyConfigFromRequest(request, config);
+                  if (!saveConfig(config)) {
+                      storageFault = true;
+                      request->send(500, "text/plain", "Falha ao salvar configuracao");
+                      return;
+                  }
+                  request->redirect(Routes::ADMIN);
+              });
+
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_TIME), HTTP_POST, [](AsyncWebServerRequest* request) {
         if (!request->hasParam("datetime", true) ||
             !applySystemTimeFromDatetimeLocal(request->getParam("datetime", true)->value())) {
             request->send(400, "text/plain", "Horario invalido");
@@ -408,31 +423,43 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN_IRRIGATE), HTTP_POST,
               [&config, manualIrrigate](AsyncWebServerRequest* request) {
-                  if (!requireAuth(request, config)) return;
                   uint16_t duration = config.irrigationDurationSec;
                   if (request->hasParam("durationSec", true)) {
-                      duration = clampU16(request->getParam("durationSec", true)->value().toInt(), 1, 3600);
+                      duration = clampU16(request->getParam("durationSec", true)->value().toInt(), 1,
+                                           MAX_IRRIGATION_DURATION_SEC);
                   }
-                  manualIrrigate(duration);
+                  ManualIrrigateResult result = manualIrrigate(duration);
+                  if (result == ManualIrrigateResult::BLOCKED_COOLDOWN) {
+                      request->redirect(String(Routes::ADMIN) + "?blocked=cooldown");
+                      return;
+                  }
+                  if (result == ManualIrrigateResult::BLOCKED_DAILY_BUDGET) {
+                      request->redirect(String(Routes::ADMIN) + "?blocked=budget");
+                      return;
+                  }
                   request->redirect(Routes::ADMIN);
               });
 
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY), HTTP_GET, [&config](AsyncWebServerRequest* request) {
-        if (!requireAuth(request, config)) return;
-        AsyncWebServerResponse* response =
-            request->beginResponse(200, "text/csv", buildHistoryCsv());
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_STOP), HTTP_POST, [stopIrrigation](AsyncWebServerRequest* request) {
+        stopIrrigation();
+        request->redirect(Routes::ADMIN);
+    });
+
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY), HTTP_GET, [](AsyncWebServerRequest* request) {
+        AsyncWebServerResponse* response = request->beginResponse(200, "text/csv", buildHistoryCsv());
         response->addHeader("Content-Disposition", "attachment; filename=history.csv");
         request->send(response);
     });
 
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY_RESET), HTTP_POST, [&config](AsyncWebServerRequest* request) {
-        if (!requireAuth(request, config)) return;
-        if (!clearHistory()) {
-            request->send(500, "text/plain", "Falha ao zerar historico");
-            return;
-        }
-        request->redirect(Routes::ADMIN);
-    });
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY_RESET), HTTP_POST,
+              [&storageFault](AsyncWebServerRequest* request) {
+                  if (!clearHistory()) {
+                      storageFault = true;
+                      request->send(500, "text/plain", "Falha ao zerar historico");
+                      return;
+                  }
+                  request->redirect(Routes::ADMIN);
+              });
 }
 
 }  // namespace WebServer

@@ -3,7 +3,13 @@
 #include <cstdint>
 
 constexpr uint8_t MAX_SCHEDULE_SLOTS = 2;
-constexpr uint8_t ADMIN_PASSWORD_MAX_LEN = 32;
+
+// Limites de segurança fixos no firmware — não editáveis pela interface web,
+// só recompilando. Ver README (Rotinas de segurança) para o racional de
+// cada um.
+constexpr uint16_t MAX_IRRIGATION_DURATION_SEC = 300; // teto absoluto por acionamento (5 min)
+constexpr uint16_t IRRIGATION_COOLDOWN_SEC = 10;      // intervalo mínimo entre acionamentos (fase de testes)
+constexpr uint32_t DAILY_WATER_BUDGET_SEC = 900;      // orçamento diário de válvula aberta (15 min)
 
 struct ScheduleSlot {
     uint8_t hour;   // 0-23
@@ -12,18 +18,12 @@ struct ScheduleSlot {
 };
 
 // Configuração persistida em SPIFFS/LittleFS, editável via POST /admin/config.
+// Sem sensor de umidade nesta fase do projeto: a irrigação é só por horário
+// programado, sem confirmação por limiar — ver README (Rotinas de
+// segurança) sobre o orçamento diário como salvaguarda nesse cenário.
 struct IrrigationConfig {
     ScheduleSlot schedules[MAX_SCHEDULE_SLOTS];
     uint8_t scheduleCount;
 
-    uint8_t moistureThreshold; // 0-100%, irriga só se leitura < isso
-    bool useThreshold;         // liga/desliga a checagem de limiar
-
     uint16_t irrigationDurationSec; // duração da abertura da válvula ("intensidade")
-
-    // Calibração do sensor capacitivo: leitura ADC bruta nos extremos.
-    uint16_t sensorDryRaw; // leitura com sensor seco/no ar
-    uint16_t sensorWetRaw; // leitura com sensor em água
-
-    char adminPassword[ADMIN_PASSWORD_MAX_LEN];
 };

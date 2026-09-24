@@ -36,15 +36,7 @@ void applyDefaultConfig(IrrigationConfig& config) {
         config.schedules[i].enabled = false;
     }
 
-    config.moistureThreshold = 30;
-    config.useThreshold = true;
-
     config.irrigationDurationSec = 10;
-
-    config.sensorDryRaw = 4095; // ADC de 12 bits, extremo "seco" típico
-    config.sensorWetRaw = 0;    // extremo "em água" típico
-
-    config.adminPassword[0] = '\0';
 }
 
 } // namespace
