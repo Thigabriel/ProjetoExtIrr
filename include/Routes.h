@@ -11,4 +11,5 @@ namespace Routes {
     constexpr const char* ADMIN_STOP = "/admin/stop";                // POST, senha — fecha a valvula agora (parada de emergencia)
     constexpr const char* ADMIN_HISTORY = "/admin/history";         // GET, senha — baixa CSV
     constexpr const char* ADMIN_HISTORY_RESET = "/admin/history/reset"; // POST, senha
+    constexpr const char* ADMIN_STORAGE = "/admin/storage";         // GET — aba de armazenamento: uso, historico em tabela, apagar
 }

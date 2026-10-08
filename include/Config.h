@@ -10,6 +10,7 @@ constexpr uint8_t MAX_SCHEDULE_SLOTS = 2;
 constexpr uint16_t MAX_IRRIGATION_DURATION_SEC = 300; // teto absoluto por acionamento (5 min)
 constexpr uint16_t IRRIGATION_COOLDOWN_SEC = 10;      // intervalo mínimo entre acionamentos (fase de testes)
 constexpr uint32_t DAILY_WATER_BUDGET_SEC = 900;      // orçamento diário de válvula aberta (15 min)
+constexpr uint8_t STORAGE_WARNING_THRESHOLD_PERCENT = 80; // aviso antecipado antes do armazenamento encher
 
 struct ScheduleSlot {
     uint8_t hour;   // 0-23

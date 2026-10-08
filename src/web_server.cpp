@@ -70,6 +70,10 @@ constexpr const char* PAGE_STYLE =
     "button.danger{background:#fdece9;color:var(--danger)}"
     "a.link{display:inline-block;margin-top:4px;color:var(--green-dark);font-weight:600;text-decoration:none}"
     ".muted{color:var(--muted);font-size:.85rem;margin:4px 0 0}"
+    ".bar{height:10px;border-radius:6px;background:#eef1ee;overflow:hidden;margin-top:8px}"
+    ".bar-fill{height:100%;background:var(--green);width:0%}"
+    ".bar-fill.warn{background:#c9821f}"
+    ".bar-fill.danger{background:var(--danger)}"
     "</style>";
 
 String htmlHead(const char* title) {
@@ -79,9 +83,16 @@ String htmlHead(const char* title) {
 }
 
 String buildStatusJson(const IrrigationConfig& config, bool valveOpen, bool storageFault) {
+    size_t usedBytes = storageUsedBytes();
+    size_t totalBytes = storageTotalBytes();
+    uint8_t storagePercent = totalBytes > 0 ? static_cast<uint8_t>((usedBytes * 100ULL) / totalBytes) : 0;
+
     String json = "{\"valveOpen\":" + String(valveOpen ? "true" : "false") +
                   ",\"currentEpoch\":" + String(static_cast<uint32_t>(time(nullptr))) +
                   ",\"storageFault\":" + (storageFault ? "true" : "false") +
+                  ",\"storageUsedBytes\":" + String(usedBytes) +
+                  ",\"storageTotalBytes\":" + String(totalBytes) +
+                  ",\"storagePercent\":" + String(storagePercent) +
                   ",\"config\":{\"schedules\":[";
     for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
         const ScheduleSlot& slot = config.schedules[i];
@@ -132,6 +143,12 @@ String buildStatusHtml() {
         "<div class=\"card\"><h2>Horarios programados</h2>"
         "<div id=\"schedules\">--</div>"
         "</div>"
+        "<div class=\"card\"><h2>Armazenamento</h2>"
+        "<div class=\"stat\"><span>Historico usado</span><span id=\"storageText\">--</span></div>"
+        "<div class=\"bar\"><div id=\"storageBar\" class=\"bar-fill\"></div></div>"
+        "<p id=\"storageWarning\" class=\"muted\" style=\"display:none;color:var(--danger)\">"
+        "Armazenamento perto de encher — considere baixar e zerar o historico.</p>"
+        "</div>"
         "<a class=\"link\" href=\"" + String(Routes::ADMIN) + "\">Ir para administracao &rarr;</a>"
         "</main>"
         "<script>"
@@ -146,9 +163,16 @@ String buildStatusHtml() {
         "function reasonLabel(r){return {SCHEDULE:'Irrigou (horario)',MANUAL:'Manual',"
         "BLOCKED_COOLDOWN:'Bloqueado (cooldown)',BLOCKED_DAILY_BUDGET:'Bloqueado (orcamento diario)',"
         "EMERGENCY_STOP:'Parada de emergencia'}[r]||r;}"
+        "var STORAGE_WARN_PCT=" + String(STORAGE_WARNING_THRESHOLD_PERCENT) + ";"
         "function refresh(){"
         "fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
         "document.getElementById('faultCard').style.display=d.storageFault?'block':'none';"
+        "var pct=d.storagePercent;"
+        "document.getElementById('storageText').textContent=pct+'% ('+Math.round(d.storageUsedBytes/1024)+'KB de '+Math.round(d.storageTotalBytes/1024)+'KB)';"
+        "var bar=document.getElementById('storageBar');"
+        "bar.style.width=pct+'%';"
+        "bar.className='bar-fill'+(pct>=95?' danger':(pct>=STORAGE_WARN_PCT?' warn':''));"
+        "document.getElementById('storageWarning').style.display=pct>=STORAGE_WARN_PCT?'block':'none';"
         "var badge=document.getElementById('valveBadge');"
         "badge.className='badge '+(d.valveOpen?'on':'off');"
         "document.getElementById('valveText').textContent=d.valveOpen?'Irrigando agora':'Aguardando';"
@@ -242,11 +266,22 @@ String buildAdminFormHtml(const IrrigationConfig& config, const String& notice) 
             "<button type=\"submit\">Salvar</button>"
             "</form></div>"
 
-            "<div class=\"card\"><h2>Historico</h2>"
-            "<a class=\"link\" href=\"" + String(Routes::ADMIN_HISTORY) + "\">Baixar CSV</a>"
-            "<form method=\"POST\" action=\"" + String(Routes::ADMIN_HISTORY_RESET) +
-            "\" onsubmit=\"return confirm('Apagar todo o historico?');\">"
-            "<button type=\"submit\" class=\"danger\">Zerar historico</button></form></div>"
+            "<div class=\"card\"><h2>Historico e armazenamento</h2>";
+
+    {
+        size_t usedBytes = storageUsedBytes();
+        size_t totalBytes = storageTotalBytes();
+        uint8_t storagePercent = totalBytes > 0 ? static_cast<uint8_t>((usedBytes * 100ULL) / totalBytes) : 0;
+        html += "<p class=\"muted\" style=\"margin:0 0 8px\">Armazenamento usado: " + String(storagePercent) + "%";
+        if (storagePercent >= STORAGE_WARNING_THRESHOLD_PERCENT) {
+            html += " — <span style=\"color:var(--danger)\">perto de encher</span>";
+        }
+        html += "</p>";
+    }
+
+    html +=
+            "<a class=\"link\" href=\"" + String(Routes::ADMIN_STORAGE) + "\">Ver historico e gerenciar armazenamento &rarr;</a>"
+            "</div>"
 
             "<a class=\"link\" href=\"" + String(Routes::STATUS) + "\">&larr; Ver status</a>"
             "</main></body></html>";
@@ -260,7 +295,7 @@ String formatDateTime(uint32_t timestamp) {
     time_t t = static_cast<time_t>(timestamp);
     struct tm timeinfo;
     gmtime_r(&t, &timeinfo);
-    char buf[20];
+    char buf[64];
     snprintf(buf, sizeof(buf), "%02d/%02d/%04d %02d:%02d", timeinfo.tm_mday, timeinfo.tm_mon + 1,
              timeinfo.tm_year + 1900, timeinfo.tm_hour, timeinfo.tm_min);
     return String(buf);
@@ -278,6 +313,105 @@ String buildHistoryCsv() {
                reasonToString(entry.reason) + "\n";
     }
     return csv;
+}
+
+// Aba dedicada de armazenamento (link a partir de /admin — sem autenticacao
+// nesta fase, como as demais rotas). Mostra o uso do SPIFFS, os registros
+// mais recentes do historico numa tabela, e o botao de apagar tudo — com
+// duas confirmacoes em sequencia, ja que essa acao e irreversivel.
+String buildStorageHtml() {
+    size_t usedBytes = storageUsedBytes();
+    size_t totalBytes = storageTotalBytes();
+    uint8_t storagePercent = totalBytes > 0 ? static_cast<uint8_t>((usedBytes * 100ULL) / totalBytes) : 0;
+    size_t count = historyCount();
+
+    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Armazenamento") +
+        "</head><body>"
+        "<header><h1>Armazenamento</h1><p>Irrigacao Comunitaria</p></header>"
+        "<main>";
+
+    if (storagePercent >= STORAGE_WARNING_THRESHOLD_PERCENT) {
+        html += "<div class=\"card\" style=\"border:2px solid var(--danger);\">"
+                "<p style=\"margin:0;color:var(--danger)\">Armazenamento perto de encher — considere "
+                "baixar o CSV e apagar o historico abaixo.</p></div>";
+    }
+
+    html += "<div class=\"card\"><h2>Uso do armazenamento</h2>"
+            "<div class=\"stat\"><span>Config + historico</span><span>" + String(storagePercent) + "% (" +
+            String(usedBytes / 1024) + "KB de " + String(totalBytes / 1024) + "KB)</span></div>"
+            "<div class=\"bar\"><div class=\"bar-fill" +
+            String(storagePercent >= 95 ? " danger" : (storagePercent >= STORAGE_WARNING_THRESHOLD_PERCENT ? " warn" : "")) +
+            "\" style=\"width:" + String(storagePercent) + "%\"></div></div>"
+            "</div>";
+
+    html += "<div class=\"card\"><h2>Historico (" + String(count) + " registros)</h2>";
+    if (count == 0) {
+        html += "<p class=\"muted\">Nenhum evento registrado ainda.</p>";
+    } else {
+        constexpr size_t MAX_ROWS_SHOWN = 50;
+        size_t start = count > MAX_ROWS_SHOWN ? count - MAX_ROWS_SHOWN : 0;
+        if (start > 0) {
+            html += "<p class=\"muted\">Mostrando os " + String(count - start) + " mais recentes de " +
+                    String(count) + ". Baixe o CSV para o historico completo.</p>";
+        }
+        html += "<table style=\"width:100%;border-collapse:collapse;font-size:.85rem\">"
+                "<tr style=\"text-align:left;color:var(--muted)\"><th>Quando</th><th>Resultado</th><th>Duracao</th></tr>";
+        HistoryEntry entry;
+        for (size_t i = start; i < count; i++) {
+            if (!readHistoryEntry(i, entry)) continue;
+            html += "<tr style=\"border-top:1px solid #eef1ee\"><td>" + formatDateTime(entry.timestamp) +
+                    "</td><td>" + reasonToString(entry.reason) + "</td><td>" +
+                    (entry.irrigated ? String(entry.durationSec) + "s" : "--") + "</td></tr>";
+        }
+        html += "</table>";
+    }
+    html += "<a class=\"link\" href=\"" + String(Routes::ADMIN_HISTORY) + "\">Baixar CSV completo</a>"
+
+            "<button type=\"button\" id=\"deleteStep1Btn\" class=\"danger\" onclick=\"startDeleteConfirm()\">"
+            "Apagar todo o historico</button>"
+
+            "<div id=\"deleteConfirmBox\" style=\"display:none;border:2px solid var(--danger);"
+            "border-radius:10px;padding:12px;margin-top:16px\">"
+            "<p style=\"margin:0 0 10px;color:var(--danger);font-size:.9rem\">Tem certeza? Isso apaga "
+            "TODO o historico, sem volta. Baixe o CSV antes se quiser guardar os dados.</p>"
+            "<form method=\"POST\" action=\"" + String(Routes::ADMIN_HISTORY_RESET) + "\">"
+            "<button type=\"submit\" id=\"deleteConfirmBtn\" class=\"danger\" disabled>Aguarde...</button>"
+            "</form>"
+            "<button type=\"button\" onclick=\"cancelDeleteConfirm()\" style=\"width:auto;background:none;"
+            "color:var(--muted);padding:8px 0;margin-top:8px;font-weight:600\">Cancelar</button>"
+            "</div>"
+
+            "</div>"
+            "<a class=\"link\" href=\"" + String(Routes::ADMIN) + "\">&larr; Voltar para administracao</a>"
+            "</main>"
+            "<script>"
+            "var deleteTimer=null;"
+            "function startDeleteConfirm(){"
+            "document.getElementById('deleteStep1Btn').style.display='none';"
+            "document.getElementById('deleteConfirmBox').style.display='block';"
+            "var btn=document.getElementById('deleteConfirmBtn');"
+            "var secondsLeft=5;"
+            "btn.disabled=true;"
+            "btn.textContent='Aguarde '+secondsLeft+'s...';"
+            "deleteTimer=setInterval(function(){"
+            "secondsLeft--;"
+            "if(secondsLeft<=0){"
+            "clearInterval(deleteTimer);"
+            "btn.disabled=false;"
+            "btn.textContent='Confirmar exclusao definitiva';"
+            "}else{"
+            "btn.textContent='Aguarde '+secondsLeft+'s...';"
+            "}"
+            "},1000);"
+            "}"
+            "function cancelDeleteConfirm(){"
+            "if(deleteTimer)clearInterval(deleteTimer);"
+            "document.getElementById('deleteConfirmBox').style.display='none';"
+            "document.getElementById('deleteStep1Btn').style.display='block';"
+            "}"
+            "</script>"
+            "</body></html>";
+    return html;
 }
 
 uint8_t clampU8(long value, uint8_t lo, uint8_t hi) {
@@ -458,8 +592,12 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
                       request->send(500, "text/plain", "Falha ao zerar historico");
                       return;
                   }
-                  request->redirect(Routes::ADMIN);
+                  request->redirect(Routes::ADMIN_STORAGE);
               });
+
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN_STORAGE), HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->send(200, "text/html", buildStorageHtml());
+    });
 }
 
 }  // namespace WebServer

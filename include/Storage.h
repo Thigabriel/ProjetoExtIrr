@@ -14,3 +14,8 @@ bool appendHistoryEntry(const HistoryEntry& entry);
 size_t historyCount();
 bool readHistoryEntry(size_t index, HistoryEntry& outEntry);
 bool clearHistory();
+
+// Uso do sistema de arquivos SPIFFS inteiro (não só o histórico) — usado
+// para o aviso antecipado de armazenamento perto de encher.
+size_t storageUsedBytes();
+size_t storageTotalBytes();

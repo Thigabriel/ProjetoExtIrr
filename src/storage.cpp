@@ -151,3 +151,13 @@ bool clearHistory() {
 
     return SPIFFS.remove(HISTORY_PATH);
 }
+
+size_t storageUsedBytes() {
+    if (!ensureMounted()) return 0;
+    return SPIFFS.usedBytes();
+}
+
+size_t storageTotalBytes() {
+    if (!ensureMounted()) return 0;
+    return SPIFFS.totalBytes();
+}
