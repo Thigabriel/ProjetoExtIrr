@@ -2,6 +2,7 @@
 
 // Contrato de rotas HTTP servidas pelo ESP32 em modo AP (192.168.4.1).
 namespace Routes {
+    constexpr const char* ROOT = "/";                                // GET — redireciona para o painel completo (endereco mostrado na tela LCD)
     constexpr const char* STATUS = "/status";                       // GET, aberto — pagina visual (HTML)
     constexpr const char* STATUS_JSON = "/status.json";             // GET, aberto — dados brutos (JSON), consumido pela pagina /status
     constexpr const char* REMOTE = "/remote";                       // GET, aberto — painel completo

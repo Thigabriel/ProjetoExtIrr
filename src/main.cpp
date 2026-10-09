@@ -7,6 +7,7 @@
 #include "CloudConfig.h"
 #include "CloudHistory.h"
 #include "History.h"
+#include "LcdDisplay.h"
 #include "Storage.h"
 #include "irrigation_logic.h"
 #include "web_server.h"
@@ -25,6 +26,7 @@ constexpr const char* AP_PASSWORD = "irrigacao";
 constexpr const char* WIFI_SSID = WifiConfig::SSID;
 constexpr const char* WIFI_PASSWORD = WifiConfig::PASSWORD;
 constexpr time_t VALID_TIME_EPOCH = 1704067200; // 2024-01-01 UTC
+constexpr unsigned long WIFI_CONNECT_GRACE_MS = 20000; // espera no boot antes de a tela avisar "sem Wi-Fi"
 
 AsyncWebServer server(80);
 IrrigationConfig config;
@@ -201,6 +203,33 @@ void evaluateIrrigation() {
     }
 }
 
+// Mantém a tela com o endereço atual do site: o IP vem do roteador por DHCP
+// e pode mudar a cada boot ou reconexão, então é reescrito sempre que muda.
+// Sem Wi-Fi, mostra o IP da rede do próprio ESP32, que é fixo.
+void updateAddressDisplay() {
+    enum class Shown : uint8_t { CONNECTING, ADDRESS, OFFLINE };
+    static Shown shown = Shown::CONNECTING;
+    static IPAddress shownIp;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        IPAddress ip = WiFi.localIP();
+        if (shown != Shown::ADDRESS || ip != shownIp) {
+            shown = Shown::ADDRESS;
+            shownIp = ip;
+            LcdDisplay::showAddress(ip);
+            Serial.printf("[wifi] conectado a %s; painel http://%s/\n", WIFI_SSID, ip.toString().c_str());
+        }
+        return;
+    }
+
+    bool stillBooting = shown == Shown::CONNECTING && millis() < WIFI_CONNECT_GRACE_MS;
+    if (shown != Shown::OFFLINE && !stillBooting) {
+        shown = Shown::OFFLINE;
+        LcdDisplay::showOffline(WiFi.softAPIP());
+        Serial.println("[wifi] sem conexao com o Wi-Fi do local");
+    }
+}
+
 } // namespace
 
 void setup() {
@@ -210,6 +239,9 @@ void setup() {
     digitalWrite(VALVE_PIN, LOW);
 
     loadConfig(config);
+
+    LcdDisplay::begin();
+    LcdDisplay::showConnecting();
 
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
@@ -227,12 +259,7 @@ void setup() {
 void loop() {
     updateValve();
 
-    static bool stationReported = false;
-    if (!stationReported && WiFi.status() == WL_CONNECTED) {
-        stationReported = true;
-        Serial.printf("[wifi] conectado a %s, IP %s; painel http://%s/remote\n", WIFI_SSID,
-                      WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str());
-    }
+    updateAddressDisplay();
 
     static bool timeReported = false;
     if (!timeReported && isSystemTimeValid()) {

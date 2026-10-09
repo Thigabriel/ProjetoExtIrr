@@ -401,6 +401,10 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
     // casa "/admin" com QUALQUER coisa começando com "/admin/" — sem isso,
     // a rota "/admin" (registrada primeiro) intercepta "/admin/config" e
     // "/admin/history" antes deles serem alcançados.
+    server.on(AsyncURIMatcher::exact(Routes::ROOT), HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect(Routes::REMOTE);
+    });
+
     server.on(AsyncURIMatcher::exact(Routes::STATUS), HTTP_GET, [](AsyncWebServerRequest* request) {
         request->send(200, "text/html", buildStatusHtml());
     });

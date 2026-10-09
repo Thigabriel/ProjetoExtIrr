@@ -18,6 +18,7 @@ A irrigação dispara por **horário programado**. Nesta fase do projeto não h�
 | Sensor de umidade capacitivo | ⏸ fora de escopo nesta fase — irrigação roda só por horário, sem sensor |
 | Válvula solenoide (via relé) | 🔲 ainda não montado — mockada pelo LED onboard (GPIO2) |
 | RTC externo (DS3231) | 🔲 ainda não montado — horário obtido por NTP via Wi-Fi |
+| Tela LCD 16x2 com adaptador I2C (PCF8574) | 🔲 temporária — mostra o IP do site; SDA no GPIO21, SCL no GPIO22. Será trocada por uma tela gráfica com QR code |
 
 Quando o hardware real chegar (válvula, RTC, e eventualmente o sensor), os pontos de mock ficam isolados em `src/main.cpp` (`VALVE_PIN`) — trocar o acionamento sem mexer no resto do firmware.
 
@@ -43,6 +44,7 @@ pio run -t uploadfs   # precisa de uma pasta data/ (pode ser vazia) na raiz do p
 
 | Rota | Método | Função |
 |---|---|---|
+| `/` | GET | redireciona para `/remote` — basta digitar no navegador o IP mostrado na tela LCD |
 | `/status` | GET | painel local: data e hora, irrigação manual, parada e última irrigação |
 | `/status.json` | GET | os mesmos dados em JSON (consumido pela página `/status`) |
 | `/cloud/history.json` | GET | cache dos últimos registros recebidos do Google Sheets |
@@ -76,6 +78,7 @@ include/          contratos de dados/rotas compartilhados entre os módulos
   History.h       HistoryEntry, TriggerReason
   Routes.h        caminhos das rotas HTTP
   Storage.h       persistência da configuração (SPIFFS)
+  LcdDisplay.h    tela LCD que mostra o endereço do site
   CloudConfig.example.h  modelo das credenciais (Wi-Fi, URL e token do Apps Script); copiar para CloudConfig.h
   CloudHistory.h  fila/cache do histórico cloud
 src/
@@ -83,6 +86,7 @@ src/
   irrigation_logic.*  decisão de irrigação (horário), função pura
   storage.cpp     implementação da persistência de configuração em SPIFFS
   cloud_history.cpp envio assíncrono e cache do Google Sheets
+  lcd_display.cpp escrita na tela LCD (I2C), com detecção automática do endereço
   web_server.*    rotas HTTP, páginas HTML
 docs/             QR codes pra impressão
 ```
