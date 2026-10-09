@@ -109,6 +109,7 @@ bool refreshHistory() {
 
 void cloudTask(void*) {
     uint32_t lastRefresh = 0;
+    bool refreshPending = true; // busca o histórico assim que houver conexão e logo após cada envio
     for (;;) {
         if (!configured() || WiFi.status() != WL_CONNECTED) {
             connected = false;
@@ -122,17 +123,20 @@ void cloudTask(void*) {
             String response;
             if (!requestCloud(String(CloudConfig::GOOGLE_SHEETS_WEB_APP_URL), &payload, response)) {
                 connected = false;
-                xQueueSendToBack(jobQueue, &job, pdMS_TO_TICKS(1000));
+                // Volta para a frente da fila, para manter a ordem dos eventos.
+                xQueueSendToFront(jobQueue, &job, pdMS_TO_TICKS(1000));
                 vTaskDelay(pdMS_TO_TICKS(5000));
                 continue;
             }
             connected = true;
-            lastRefresh = 0;
+            // Com mais eventos na fila, envia todos antes de reler a planilha.
+            refreshPending = uxQueueMessagesWaiting(jobQueue) == 0;
         }
 
         uint32_t now = millis();
-        if (now - lastRefresh >= HISTORY_REFRESH_MS) {
+        if (refreshPending || now - lastRefresh >= HISTORY_REFRESH_MS) {
             refreshHistory();
+            refreshPending = false;
             lastRefresh = now;
         }
     }

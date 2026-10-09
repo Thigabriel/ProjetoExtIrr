@@ -79,6 +79,20 @@ constexpr const char* PAGE_STYLE =
     "button:disabled{opacity:.55;cursor:not-allowed}"
     "</style>";
 
+// JavaScript compartilhado entre /status e /remote: formatação de data e
+// duração e tradução dos códigos de motivo vindos do histórico.
+constexpr const char* PAGE_SCRIPT =
+    "var projectTimeZone='America/Sao_Paulo';"
+    "function fmtEpoch(e,timeZone){if(!e)return '--';return new Intl.DateTimeFormat('pt-BR',{timeZone:timeZone||projectTimeZone,"
+    "dateStyle:'short',timeStyle:'short'}).format(new Date(e*1000));}"
+    "function formatDuration(seconds){var minutes=Math.floor(seconds/60),rest=seconds%60;"
+    "return (minutes?minutes+' min':'')+(minutes&&rest?' ':'')+(rest?rest+' s':'')||'0 s';}"
+    "function reasonLabel(r){return {SCHEDULE:'Horário programado',MANUAL:'Manual',SKIPPED:'Ignorado',"
+    "BLOCKED_COOLDOWN:'Bloqueado (intervalo mínimo)',BLOCKED_DAILY_BUDGET:'Bloqueado (limite diário)',"
+    "EMERGENCY_STOP:'Parada de emergência'}[r]||r;}"
+    "function historyError(d){if(d.ok)return '';return {not_initialized:'Aguardando a primeira leitura da planilha.',"
+    "endpoint_not_configured:'Planilha não configurada no firmware.'}[d.error]||d.error||'Aguardando conexão com a planilha.';}";
+
 String htmlHead(const char* title) {
     return String("<meta charset=\"utf-8\"><meta name=\"viewport\" "
                    "content=\"width=device-width, initial-scale=1\"><title>") +
@@ -114,14 +128,14 @@ String buildStatusJson(const IrrigationConfig& config, bool valveOpen, uint16_t 
 }
 
 String buildStatusHtml() {
-    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Status") +
+    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigação - Status") +
         "</head><body>"
-        "<header><h1>Irrigacao Comunitaria</h1><p>Horta local</p></header>"
+        "<header><h1>Irrigação Comunitária</h1><p>Horta local</p></header>"
         "<main>"
         "<div id=\"faultCard\" class=\"card notice\">"
         "<h2 style=\"color:var(--danger)\">Falha detectada</h2>"
-        "<p>O sistema nao conseguiu salvar uma configuracao no armazenamento interno. "
-        "Entre em contato com o professor responsavel pelo projeto.</p>"
+        "<p>O sistema não conseguiu salvar uma configuração no armazenamento interno. "
+        "Entre em contato com o professor responsável pelo projeto.</p>"
         "</div>"
         "<div class=\"card\" style=\"text-align:center\">"
         "<span id=\"valveBadge\" class=\"badge off\"><span class=\"dot\"></span>"
@@ -133,30 +147,25 @@ String buildStatusHtml() {
         "<div class=\"stat\"><span>Internet</span><span id=\"network\">Verificando</span></div>"
         "</div>"
         "<div id=\"actionNotice\" class=\"card notice\"></div>"
-        "<div class=\"card\"><h2>Controle da irrigacao</h2>"
-        "<p class=\"muted\">Duracao manual: <strong id=\"duration\">--</strong></p>"
+        "<div class=\"card\"><h2>Controle da irrigação</h2>"
+        "<p class=\"muted\">Duração manual: <strong id=\"duration\">--</strong></p>"
         "<form method=\"POST\" action=\"" + String(Routes::ADMIN_IRRIGATE) + "\">"
         "<input type=\"hidden\" name=\"durationMinutes\" id=\"durationMinutes\">"
         "<input type=\"hidden\" name=\"durationSeconds\" id=\"durationSeconds\">"
         "<button type=\"submit\" id=\"irrigateButton\" disabled>Irrigar agora</button></form>"
         "<form method=\"POST\" action=\"" + String(Routes::ADMIN_STOP) + "\">"
-        "<button type=\"submit\" class=\"danger\" id=\"stopButton\" disabled>Parar irrigacao</button></form>"
+        "<button type=\"submit\" class=\"danger\" id=\"stopButton\" disabled>Parar irrigação</button></form>"
         "</div>"
         "<a class=\"link\" href=\"" + String(Routes::REMOTE) + "\">Abrir painel completo &rarr;</a>"
-        "<div class=\"card\"><h2>Ultima vez irrigado</h2>"
+        "<div class=\"card\"><h2>Última vez irrigado</h2>"
         "<div class=\"stat\"><span>Data e hora</span><span id=\"lastWhen\">--</span></div>"
-        "<div class=\"stat\"><span>Duracao</span><span id=\"lastDuration\">--</span></div>"
+        "<div class=\"stat\"><span>Duração</span><span id=\"lastDuration\">--</span></div>"
         "</div>"
         "</main>"
-        "<script>"
-        "function pad(n){return String(n).padStart(2,'0');}"
-        "var projectTimeZone='America/Sao_Paulo';"
-        "function fmtEpoch(e,timeZone){if(!e)return '--';return new Intl.DateTimeFormat('pt-BR',{timeZone:timeZone||projectTimeZone,dateStyle:'short',timeStyle:'short'}).format(new Date(e*1000));}"
-        "function formatDuration(seconds){var minutes=Math.floor(seconds/60),rest=seconds%60;"
-        "return (minutes?minutes+' min':'')+(minutes&&rest?' ':'')+(rest?rest+' s':'')||'0 s';}"
+        "<script>" + String(PAGE_SCRIPT) +
         "var valveDeadline=0;"
         "function updateValveCountdown(){var remaining=Math.max(0,Math.ceil((valveDeadline-Date.now())/1000));"
-        "document.getElementById('valveCountdown').textContent=valveDeadline?(remaining?formatDuration(remaining):'Fechando...'):'Valvula fechada';}"
+        "document.getElementById('valveCountdown').textContent=valveDeadline?(remaining?formatDuration(remaining):'Fechando...'):'Válvula fechada';}"
         "function refresh(){"
         "fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
         "document.getElementById('faultCard').style.display=d.storageFault?'block':'none';"
@@ -164,7 +173,7 @@ String buildStatusHtml() {
         "badge.className='badge '+(d.valveOpen?'on':'off');"
         "document.getElementById('valveText').textContent=d.valveOpen?'Irrigando agora':'Aguardando';"
         "valveDeadline=d.valveOpen?Date.now()+Number(d.valveRemainingSec||0)*1000:0;updateValveCountdown();"
-        "document.getElementById('now').textContent=fmtEpoch(d.currentEpoch);"
+        "document.getElementById('now').textContent=d.clockSynchronized?fmtEpoch(d.currentEpoch):'Aguardando sincronização';"
         "document.getElementById('network').textContent=d.stationConnected?'Conectado ('+d.stationIp+')':'Sem internet';"
         "var duration=Math.round(Number(d.config.manualIrrigationDurationMin)*60);"
         "document.getElementById('duration').textContent=formatDuration(duration);"
@@ -178,20 +187,20 @@ String buildStatusHtml() {
         "function refreshLastIrrigation(){fetch('" + String(Routes::CLOUD_HISTORY_JSON) + "').then(function(r){return r.json();}).then(function(d){"
         "if(d.timeZone)projectTimeZone=d.timeZone;"
         "var entry=(d.history||[]).find(function(item){return item.irrigated;});"
-        "document.getElementById('lastWhen').textContent=entry?fmtEpoch(entry.timestamp,d.timeZone):'Nenhuma irrigacao registrada';"
+        "document.getElementById('lastWhen').textContent=entry?fmtEpoch(entry.timestamp,d.timeZone):'Nenhuma irrigação registrada';"
         "document.getElementById('lastDuration').textContent=entry?formatDuration(entry.durationSec):'--';});}"
         "var params=new URLSearchParams(location.search),notice=document.getElementById('actionNotice');"
-        "if(params.get('blocked')==='cooldown'){notice.textContent='Aguarde o intervalo minimo entre irrigacoes.';notice.style.display='block';}"
-        "if(params.get('blocked')==='budget'){notice.textContent='O limite diario de irrigacao foi atingido.';notice.style.display='block';}"
-        "refresh();refreshLastIrrigation();setInterval(refresh,5000);setInterval(refreshLastIrrigation,30000);"
+        "if(params.get('blocked')==='cooldown'){notice.textContent='Aguarde o intervalo mínimo entre irrigações.';notice.style.display='block';}"
+        "if(params.get('blocked')==='budget'){notice.textContent='O limite diário de irrigação foi atingido.';notice.style.display='block';}"
+        "refresh();refreshLastIrrigation();setInterval(refresh,5000);setInterval(refreshLastIrrigation,5000);"
         "setInterval(updateValveCountdown,1000);"
         "</script>"
         "</body></html>";
     return html;
 }
 
-String buildAdminFormHtml(const IrrigationConfig& config, const String& notice, bool valveOpen,
-                          bool storageFault) {
+String buildAdminFormHtml(const IrrigationConfig& config, const String& notice, bool noticeIsError,
+                          bool valveOpen, bool storageFault) {
     bool anyScheduleActive = false;
     uint16_t durationMinutes;
     uint8_t durationSeconds;
@@ -203,41 +212,41 @@ String buildAdminFormHtml(const IrrigationConfig& config, const String& notice, 
         if (config.schedules[i].enabled) anyScheduleActive = true;
     }
 
-    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Painel completo") +
+    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigação - Painel completo") +
         "</head><body>"
-        "<header><h1>Painel completo</h1><p>Irrigacao Comunitaria</p></header>"
+        "<header><h1>Painel completo</h1><p>Irrigação Comunitária</p></header>"
         "<main class=\"remote\">"
         "<div class=\"card\"><h2>Estado do sistema</h2>"
-        "<div class=\"stat\"><span>Valvula</span><span>" + String(valveOpen ? "Irrigando" : "Fechada") + "</span></div>"
+        "<div class=\"stat\"><span>Válvula</span><span id=\"remoteValve\">" + String(valveOpen ? "Irrigando" : "Fechada") + "</span></div>"
         "<div class=\"stat\"><span>Data e hora</span><span id=\"remoteNow\">--</span></div>"
         "<div class=\"stat\"><span>Wi-Fi</span><span id=\"remoteNetwork\">Verificando</span></div>"
-        "<div class=\"stat\"><span>Falha ao salvar configuracao</span><span>" + String(storageFault ? "Sim" : "Nao") + "</span></div>"
+        "<div class=\"stat\"><span>Falha ao salvar configuração</span><span>" + String(storageFault ? "Sim" : "Não") + "</span></div>"
         "</div>"
         "<div class=\"card\"><h2>Google Sheets</h2>"
         "<div class=\"stat\"><span>Estado</span><span id=\"cloudState\">Verificando</span></div>"
         "<div class=\"stat\"><span>Na fila de envio</span><span id=\"cloudPending\">0</span></div>"
         "<a id=\"spreadsheetLink\" class=\"link\" style=\"display:none\" target=\"_blank\" rel=\"noopener\">Abrir planilha</a>"
         "</div>"
-        "<div class=\"card\"><h2>Historico recente</h2>"
+        "<div class=\"card\"><h2>Histórico recente</h2>"
         "<p id=\"historyCount\" class=\"muted\">Carregando registros...</p>"
         "<p id=\"historyError\" class=\"muted\"></p>"
-        "<div class=\"table-wrap\"><table><thead><tr><th>Data e hora</th><th>Irrigou?</th><th>Duracao</th><th>Motivo</th></tr></thead>"
+        "<div class=\"table-wrap\"><table><thead><tr><th>Data e hora</th><th>Irrigou?</th><th>Duração</th><th>Motivo</th></tr></thead>"
         "<tbody id=\"historyRows\"></tbody></table></div>"
         "</div>";
 
     if (notice.length() > 0) {
-        html += "<div class=\"card\" style=\"border:2px solid var(--danger);\"><p style=\"margin:0\">" +
-                notice + "</p></div>";
+        html += "<div class=\"card\" style=\"border:2px solid var(--" + String(noticeIsError ? "danger" : "green") +
+                ");\"><p style=\"margin:0\">" + notice + "</p></div>";
     }
     if (!anyScheduleActive) {
-        html += "<div class=\"card\"><p class=\"muted\" style=\"margin:0\">Nenhum horario de irrigacao "
-                "ativo no momento — o sistema nao vai irrigar automaticamente ate um horario ser "
+        html += "<div class=\"card\"><p class=\"muted\" style=\"margin:0\">Nenhum horário de irrigação "
+                "ativo no momento — o sistema não vai irrigar automaticamente até um horário ser "
                 "habilitado abaixo.</p></div>";
     }
 
     html +=
         "<div class=\"card\"><form method=\"POST\" action=\"" + String(Routes::ADMIN_CONFIG) + "\">"
-        "<h2>Horarios de irrigacao</h2>";
+        "<h2>Horários de irrigação</h2>";
 
     for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
         const ScheduleSlot& slot = config.schedules[i];
@@ -248,11 +257,11 @@ String buildAdminFormHtml(const IrrigationConfig& config, const String& notice, 
                 "\" value=\"" + String(slot.minute) + "\"></div>"
                 "</div>"
                 "<label class=\"chk\"><input type=\"checkbox\" name=\"enabled" + String(i) + "\"" +
-                (slot.enabled ? " checked" : "") + "> Slot " + String(i) + " ativo</label></div>";
+                (slot.enabled ? " checked" : "") + "> Horário " + String(i + 1) + " ativo</label></div>";
     }
 
-        html += "<h2>Duracao da irrigacao</h2>"
-            "<p class=\"muted\">Defina a duracao com numeros inteiros (maximo " + String(MAX_IRRIGATION_DURATION_MIN) + " minutos).</p>"
+        html += "<h2>Duração da irrigação</h2>"
+            "<p class=\"muted\">Defina a duração com números inteiros (máximo " + String(MAX_IRRIGATION_DURATION_MIN) + " minutos).</p>"
             "<div class=\"row\"><div><label>Minutos</label>"
             "<input type=\"number\" min=\"0\" max=\"" + String(MAX_IRRIGATION_DURATION_MIN) +
             "\" step=\"1\" name=\"durationMinutes\" value=\"" + String(durationMinutes) + "\"></div>"
@@ -262,36 +271,35 @@ String buildAdminFormHtml(const IrrigationConfig& config, const String& notice, 
             "</form></div>"
 
             "<div class=\"card\"><form method=\"POST\" action=\"" + String(Routes::ADMIN_CONFIG) + "\">"
-            "<h2>Duracao da irrigacao manual</h2>"
-            "<p class=\"muted\">Esta duracao vale somente para o botao da tela local.</p>"
+            "<h2>Duração da irrigação manual</h2>"
+            "<p class=\"muted\">Esta duração vale somente para o botão da tela local.</p>"
             "<div class=\"row\"><div><label>Minutos</label>"
             "<input type=\"number\" min=\"0\" max=\"" + String(MAX_IRRIGATION_DURATION_MIN) +
             "\" step=\"1\" name=\"manualDurationMinutes\" value=\"" + String(manualDurationMinutes) + "\"></div>"
             "<div><label>Segundos</label>"
             "<input type=\"number\" min=\"0\" max=\"59\" step=\"1\" name=\"manualDurationSeconds\" value=\"" + String(manualDurationSeconds) + "\"></div></div>"
-            "<button type=\"submit\">Salvar duracao manual</button>"
+            "<button type=\"submit\">Salvar duração manual</button>"
             "</form></div>"
 
             "<a class=\"link\" href=\"" + String(Routes::STATUS) + "\">Voltar ao status local &larr;</a>"
             "</main>"
-            "<script>"
-            "var projectTimeZone='America/Sao_Paulo';"
+            "<script>" + String(PAGE_SCRIPT) +
             "function updateRemoteStatus(){fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
-            "document.getElementById('remoteNow').textContent=d.clockSynchronized?new Intl.DateTimeFormat('pt-BR',{timeZone:projectTimeZone,dateStyle:'short',timeStyle:'short'}).format(new Date(d.currentEpoch*1000)):'Aguardando NTP';"
+            "document.getElementById('remoteValve').textContent=d.valveOpen?'Irrigando ('+formatDuration(Number(d.valveRemainingSec||0))+' restantes)':'Fechada';"
+            "document.getElementById('remoteNow').textContent=d.clockSynchronized?fmtEpoch(d.currentEpoch):'Aguardando sincronização';"
             "document.getElementById('remoteNetwork').textContent=d.stationConnected?'Conectado ('+d.stationIp+')':'Sem internet';"
-            "document.getElementById('cloudState').textContent=!d.cloudConfigured?'Endpoint nao configurado':d.cloudConnected?'Conectado':'Sem resposta';"
+            "document.getElementById('cloudState').textContent=!d.cloudConfigured?'Planilha não configurada':d.cloudConnected?'Conectado':'Sem resposta';"
             "document.getElementById('cloudPending').textContent=d.cloudPending;});}"
             "function updateCloudHistory(){fetch('" + String(Routes::CLOUD_HISTORY_JSON) + "').then(function(r){return r.json();}).then(function(d){"
             "if(d.timeZone)projectTimeZone=d.timeZone;"
             "var rows=document.getElementById('historyRows');rows.textContent='';"
-            "var timeZone=d.timeZone||'America/Sao_Paulo';"
-            "document.getElementById('historyCount').textContent=d.total+' registro(s) no Sheets; exibindo ate 25 recentes.';"
-            "document.getElementById('historyError').textContent=d.ok?'':(d.error||'Aguardando conexao com a planilha.');"
+            "document.getElementById('historyCount').textContent=d.ok?d.total+' registro(s) na planilha; exibindo os 25 mais recentes.':'';"
+            "document.getElementById('historyError').textContent=historyError(d);"
             "if(d.spreadsheetUrl){var link=document.getElementById('spreadsheetLink');link.href=d.spreadsheetUrl;link.style.display='inline-block';}"
             "(d.history||[]).forEach(function(item){var row=document.createElement('tr');"
-            "[new Intl.DateTimeFormat('pt-BR',{timeZone:timeZone,dateStyle:'short',timeStyle:'short'}).format(new Date(item.timestamp*1000)),item.irrigated?'SIM':'NÃO',formatDuration(Number(item.durationSec)),item.reason].forEach(function(value){var cell=document.createElement('td');cell.textContent=value;row.appendChild(cell);});rows.appendChild(row);});});}"
+            "[fmtEpoch(item.timestamp),item.irrigated?'Sim':'Não',item.irrigated?formatDuration(Number(item.durationSec)):'--',reasonLabel(item.reason)].forEach(function(value){var cell=document.createElement('td');cell.textContent=value;row.appendChild(cell);});rows.appendChild(row);});});}"
             "updateRemoteStatus();setInterval(updateRemoteStatus,5000);"
-            "updateCloudHistory();setInterval(updateCloudHistory,30000);"
+            "updateCloudHistory();setInterval(updateCloudHistory,5000);"
             "</script></body></html>";
     return html;
 }
@@ -300,12 +308,6 @@ uint8_t clampU8(long value, uint8_t lo, uint8_t hi) {
     if (value < lo) return lo;
     if (value > hi) return hi;
     return static_cast<uint8_t>(value);
-}
-
-uint16_t clampU16(long value, uint16_t lo, uint16_t hi) {
-    if (value < lo) return lo;
-    if (value > hi) return hi;
-    return static_cast<uint16_t>(value);
 }
 
 float clampDurationMinutes(float value) {
@@ -379,11 +381,11 @@ void applyConfigFromRequest(AsyncWebServerRequest* request, IrrigationConfig& co
 // mensagem legível, exibida como aviso no topo de /admin após o redirect.
 String blockedNoticeFromQueryValue(const String& value) {
     if (value == "cooldown") {
-        return "Irrigacao manual recusada: aguarde o intervalo minimo entre acionamentos (cooldown de " +
+        return "Irrigação manual recusada: aguarde o intervalo mínimo entre acionamentos (cooldown de " +
                String(IRRIGATION_COOLDOWN_SEC) + "s).";
     }
     if (value == "budget") {
-        return "Irrigacao manual recusada: orcamento diario de agua ja foi atingido. Tente novamente amanha.";
+        return "Irrigação manual recusada: orçamento diário de água já foi atingido. Tente novamente amanhã.";
     }
     return "";
 }
@@ -423,10 +425,14 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
     server.on(AsyncURIMatcher::exact(Routes::REMOTE), HTTP_GET,
               [&config, &valveOpen, &storageFault](AsyncWebServerRequest* request) {
         String notice;
+        bool noticeIsError = false;
         if (request->hasParam("blocked")) {
             notice = blockedNoticeFromQueryValue(request->getParam("blocked")->value());
+            noticeIsError = true;
+        } else if (request->hasParam("saved")) {
+            notice = "Configuração salva.";
         }
-        request->send(200, "text/html", buildAdminFormHtml(config, notice, valveOpen, storageFault));
+        request->send(200, "text/html", buildAdminFormHtml(config, notice, noticeIsError, valveOpen, storageFault));
     });
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN), HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -438,10 +444,10 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
                   applyConfigFromRequest(request, config);
                   if (!saveConfig(config)) {
                       storageFault = true;
-                      request->send(500, "text/plain", "Falha ao salvar configuracao");
+                      request->send(500, "text/plain; charset=utf-8", "Falha ao salvar configuração");
                       return;
                   }
-                  request->redirect(Routes::ADMIN);
+                  request->redirect(String(Routes::REMOTE) + "?saved=1");
               });
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN_IRRIGATE), HTTP_POST,

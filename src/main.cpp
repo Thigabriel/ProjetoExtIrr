@@ -26,6 +26,7 @@ constexpr const char* AP_PASSWORD = "irrigacao";
 constexpr const char* WIFI_SSID = WifiConfig::SSID;
 constexpr const char* WIFI_PASSWORD = WifiConfig::PASSWORD;
 constexpr time_t VALID_TIME_EPOCH = 1704067200; // 2024-01-01 UTC
+constexpr long LOCAL_UTC_OFFSET_SEC = -3L * 60L * 60L; // horário de Brasília
 constexpr unsigned long WIFI_CONNECT_GRACE_MS = 20000; // espera no boot antes de a tela avisar "sem Wi-Fi"
 
 AsyncWebServer server(80);
@@ -105,8 +106,10 @@ void logHistoryEntry(bool irrigated, uint16_t durationSec, TriggerReason reason)
 // Orçamento diário (rotina de segurança 1.3): "dia" é derivado do relógio do
 // sistema sincronizado por NTP. Antes da sincronização, os agendamentos ficam
 // suspensos; o contador diário só usa datas válidas depois disso.
+// time() devolve UTC: sem somar o fuso, o orçamento zeraria às 21h locais em
+// vez de à meia-noite.
 void resetDailyBudgetIfNewDay() {
-    int32_t dayIndex = static_cast<int32_t>(time(nullptr) / 86400L);
+    int32_t dayIndex = static_cast<int32_t>((time(nullptr) + LOCAL_UTC_OFFSET_SEC) / 86400L);
     if (dayIndex != dailyBudgetDayIndex) {
         dailyBudgetDayIndex = dayIndex;
         dailyBudgetUsedSec = 0;
@@ -247,7 +250,7 @@ void setup() {
     WiFi.softAP(AP_SSID, AP_PASSWORD);
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    configTime(-3 * 60 * 60, 0, "pool.ntp.org", "time.google.com");
+    configTime(LOCAL_UTC_OFFSET_SEC, 0, "pool.ntp.org", "time.google.com");
     CloudHistory::begin();
 
     WebServer::begin(server, config, valveOpen, storageFault, remainingValveSeconds, manualIrrigate, stopIrrigation);

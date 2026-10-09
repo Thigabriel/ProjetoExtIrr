@@ -15,9 +15,20 @@ O ESP32 envia eventos para um Web App do Google Apps Script. A configuração da
 
 O script grava os dados na aba `REGISTROS`. A coluna `Data/Hora` é formatada como `dd/MM/yyyy HH:mm:ss` usando o fuso configurado em **Configurações do projeto > Fuso horário** no Apps Script; o código não altera essa configuração. Se ela mudar, as datas legíveis existentes são atualizadas a partir do `timestamp` Unix. `Duração` é apenas uma apresentação (por exemplo, `90 s` vira `1 min 30 s`); `Duração (s)` e `timestamp` permanecem numéricos e são as fontes técnicas. A primeira solicitação após a atualização migra as durações já registradas e mantém os valores em segundos. Na primeira solicitação, se existir a aba antiga `Irrigacoes` e ainda não existir `REGISTROS`, ela será renomeada sem apagar os dados. `deviceId` fica vazio até o firmware enviar esse campo; para adicioná-lo futuramente, inclua-o no JSON criado em `src/cloud_history.cpp`, na função `jobPayload()`.
 
-O campo `Motivo` é removido de espaços nas extremidades e convertido para maiúsculas ao gravar; os registros existentes passam pela mesma normalização uma vez. Os códigos atuais, como `SCHEDULE`, `MANUAL` e `BLOCKED_COOLDOWN`, são preservados sem tradução ou mudança de significado.
+A planilha é toda em português. Os cabeçalhos de `REGISTROS` são `Data/Hora`, `Timestamp (Unix)`, `Irrigou`, `Duração`, `Duração (s)`, `Motivo`, `ID do evento` e `ID do dispositivo`. A coluna `Irrigou` mostra `Sim` (verde) ou `Não` (amarelo), e `Motivo` aparece por extenso:
 
-O Apps Script cria a aba `PAINEL` como visualização derivada de `REGISTROS`; o ESP32 continua gravando apenas em `REGISTROS`. O painel mostra contagem e duração das irrigações de hoje, última data/hora e motivo, além das contagens manuais (`MANUAL`) e automáticas/agendadas (`SCHEDULE`). O `eventId` permanece na aba técnica para identificar cada evento.
+| Código enviado pelo ESP32 | Texto na planilha |
+|---|---|
+| `SCHEDULE` | Horário programado |
+| `MANUAL` | Manual |
+| `SKIPPED` | Ignorado |
+| `BLOCKED_COOLDOWN` | Bloqueado (intervalo mínimo) |
+| `BLOCKED_DAILY_BUDGET` | Bloqueado (limite diário) |
+| `EMERGENCY_STOP` | Parada de emergência |
+
+A tradução acontece só no Apps Script: o ESP32 continua enviando os códigos e os recebe de volta em `/cloud/history.json`, então o firmware não muda. Um motivo desconhecido é gravado em maiúsculas, sem tradução. Os registros antigos (`TRUE`/`FALSE` e códigos) são convertidos uma vez, na primeira solicitação recebida pela nova versão. As mensagens de erro devolvidas ao ESP32 também estão em português.
+
+O Apps Script cria a aba `PAINEL` como visualização derivada de `REGISTROS`; o ESP32 continua gravando apenas em `REGISTROS`. O painel mostra contagem e duração das irrigações de hoje, última data/hora e motivo, além das contagens manuais, das automáticas (horário programado) e das tentativas bloqueadas no dia. O `ID do evento` permanece na aba técnica para identificar cada evento.
 
 O `PAINEL` inclui gráficos de duração por evento, irrigações por dia e duração total por dia. O primeiro usa diretamente data/hora e segundos de `REGISTROS`; os gráficos diários usam uma fórmula agregada oculta, sem copiar os eventos. `REGISTROS` recebe filtro, cabeçalho destacado, primeira linha congelada, larguras e formatos numéricos/textuais adequados, alinhamento técnico e linhas alternadas.
 
