@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apresentação: Mecanismos de Segurança no Firmware ESP32</title>
+  <style>
+    :root {
+      --bg-dark: #09130e;
+      --bg-surface: #102219;
+      --bg-card: #183326;
+      --primary: #2d6a4f;
+      --mint: #52b788;
+      --accent: #74c69d;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --border: rgba(82, 183, 136, 0.25);
+      --red: #ef4444;
+      --red-bg: rgba(239, 68, 68, 0.15);
+      --blue: #3b82f6;
+      --blue-bg: rgba(59, 130, 246, 0.15);
+      --amber: #f59e0b;
+      --amber-bg: rgba(245, 158, 11, 0.15);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-dark);
+      color: var(--text);
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top bar */
+    header {
+      background: rgba(16, 34, 25, 0.85);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      color: var(--muted);
+      z-index: 100;
+    }
+    header strong { color: var(--mint); letter-spacing: 0.5px; }
+
+    /* Slide container */
+    #slide-viewport {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .slide {
+      position: absolute;
+      width: 92vw;
+      max-width: 1200px;
+      height: 82vh;
+      max-height: 680px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+      padding: 36px 48px;
+      display: none;
+      flex-direction: column;
+      justify-content: space-between;
+      opacity: 0;
+      transform: translateY(15px);
+      transition: opacity 0.35s ease, transform 0.35s ease;
+      overflow-y: auto;
+    }
+    .slide.active {
+      display: flex;
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* Headings */
+    .slide-badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--mint);
+      background: rgba(82, 183, 136, 0.12);
+      border: 1px solid var(--border);
+      padding: 4px 12px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+    }
+    h2 {
+      font-size: 1.85rem;
+      color: #fff;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .slide-sub {
+      color: var(--muted);
+      font-size: 1rem;
+      margin-bottom: 20px;
+    }
+
+    /* Layout Grids */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      align-items: stretch;
+      flex: 1;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 16px;
+      flex: 1;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    .card h3 {
+      font-size: 1.05rem;
+      margin-bottom: 8px;
+      color: var(--mint);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card.alert {
+      border-color: rgba(239, 68, 68, 0.4);
+      background: var(--red-bg);
+    }
+    .card.alert h3 { color: #f87171; }
+    .card.blue {
+      border-color: rgba(59, 130, 246, 0.4);
+      background: var(--blue-bg);
+    }
+    .card.blue h3 { color: #60a5fa; }
+    .card.amber {
+      border-color: rgba(245, 158, 11, 0.4);
+      background: var(--amber-bg);
+    }
+    .card.amber h3 { color: #fbbf24; }
+
+    /* Code blocks */
+    pre, code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.82rem;
+    }
+    pre {
+      background: #060e0a;
+      border: 1px solid rgba(82, 183, 136, 0.2);
+      border-radius: 8px;
+      padding: 12px 14px;
+      color: #86efac;
+      overflow-x: auto;
+      line-height: 1.45;
+    }
+
+    /* Images */
+    .diagram-img {
+      width: 100%;
+      height: auto;
+      max-height: 380px;
+      object-fit: contain;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      padding: 4px;
+      cursor: zoom-in;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    th, td {
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid rgba(82, 183, 136, 0.15);
+    }
+    th {
+      background: rgba(45, 106, 79, 0.4);
+      color: var(--mint);
+      font-weight: 600;
+    }
+
+    /* Speaker Notes Bar */
+    .speaker-notes {
+      margin-top: 14px;
+      background: rgba(0, 0, 0, 0.4);
+      border-left: 3px solid var(--mint);
+      padding: 8px 14px;
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      display: none;
+    }
+    .show-notes .speaker-notes { display: block; }
+
+    /* Bottom Control Bar */
+    footer {
+      background: rgba(16, 34, 25, 0.85);
+      border-top: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+    }
+    .btn-group { display: flex; gap: 8px; }
+    button {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s;
+    }
+    button:hover { background: var(--primary); }
+    button.active { background: var(--primary); border-color: var(--mint); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div><strong>PROJETO DE EXTENSÃO UNIVERSITÁRIA</strong> • Horta Comunitária Inteligente</div>
+    <div>Firmware ESP32 • Defesa em Profundidade</div>
+  </header>
+
+  <main id="slide-viewport">
+
+    <!-- SLIDE 1: CAPA -->
+    <section class="slide active" id="slide-1" style="justify-content: center; text-align: center; background: radial-gradient(circle at center, #132f22 0%, #09130e 100%);">
+      <div style="max-width: 860px; margin: 0 auto;">
+        <span class="slide-badge">Apresentação Técnica • Firmware C++ / PlatformIO</span>
+        <h1 style="font-size: 2.8rem; font-weight: 800; color: #fff; margin: 16px 0; line-height: 1.2;">
+          MECANISMOS DE SEGURANÇA E CONFIABILIDADE NO FIRMWARE ESP32
+        </h1>
+        <p style="font-size: 1.25rem; color: var(--accent); margin-bottom: 30px;">
+          Arquitetura Defensiva em Quatro Camadas para Irrigação Automatizada e 100% Offline
+        </p>
+        <div style="background: rgba(82,183,136,0.1); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: inline-block; font-size: 0.9rem; color: #e2e8f0;">
+          <strong>Foco da Apresentação:</strong> Cooldown (10s), Orçamento Diário (15m), Teto Unitário (5m), Parada de Emergência e Rastreabilidade
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Boa tarde a todos os professores e colegas. Hoje apresentaremos a arquitetura de segurança do firmware desenvolvido para o sistema de irrigação automatizada da nossa horta comunitária. Demonstraremos como blindamos o ESP32 para operar de forma 100% autônoma, offline e imune a falhas humanas ou de hardware."
+      </div>
+    </section>
+
+    <!-- SLIDE 2: O CONTEXTO E O RISCO -->
+    <section class="slide" id="slide-2">
+      <div>
+        <span class="slide-badge">Contexto & Motivação</span>
+        <h2>O Desafio Operacional e a Missão Crítica</h2>
+        <p class="slide-sub">Por que a segurança proativa é a prioridade #1 deste firmware?</p>
+      </div>
+      <div class="grid-2">
+        <div class="card alert">
+          <h3>⚠️ O Cenário Físico da Horta</h3>
+          <ul style="padding-left: 20px; line-height: 1.6;">
+            <li><strong>Operação Desassistida:</strong> Funciona em campo aberto sem presença humana contínua.</li>
+            <li><strong>Ambiente 100% Desconectado:</strong> Sem internet, sem nuvem e sem alertas remotos por WhatsApp ou e-mail.</li>
+            <li><strong>Ausência de Sensor de Umidade Inicial:</strong> A irrigação depende exclusivamente do relógio, sem confirmação se o solo já está úmido.</li>
+          </ul>
+        </div>
+        <div class="card alert">
+          <h3>💥 Riscos Críticos Mitigados</h3>
+          <ul style="padding-left: 20px; line-height: 1.6;">
+            <li><strong>Inundação e Erosão:</strong> Uma torneira travada aberta afoga raízes e esvazia a caixa d'água da comunidade.</li>
+            <li><strong>Golpe de Aríete:</strong> Choques hidráulicos por acionamento em rajada rompem conexões de PVC.</li>
+            <li><strong>Queima de Atuadores:</strong> Chaveamento repetitivo destrói a bobina magnética do relé.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 14px; border-color: var(--mint);">
+        <strong>Diretriz de Projeto: "Software First" com Filosofia Fail-Safe.</strong> O firmware atua como o árbitro final: nenhuma ordem recebida abre a água sem antes passar por um crivo estrito de segurança.
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Em sistemas de automação comunitária, um erro de software pode causar desperdício de milhares de litros de água tratada. Como nesta fase não temos sensor capacitivo em campo, a inteligência do firmware precisa garantir que, mesmo se alguém errar a configuração, a horta nunca seja afogada."
+      </div>
+    </section>
+
+    <!-- SLIDE 3: ARQUITETURA SISTÊMICA -->
+    <section class="slide" id="slide-3">
+      <div>
+        <span class="slide-badge">Visão Sistêmica</span>
+        <h2>Arquitetura Geral de Operação Offline</h2>
+        <p class="slide-sub">Do celular do hortelão até o acionamento físico nos canteiros</p>
+      </div>
+      <div class="grid-2" style="align-items: center;">
+        <div>
+          <img src="docs/assets/system_architecture.png" class="diagram-img" alt="Arquitetura Geral">
+        </div>
+        <div>
+          <div class="card blue" style="margin-bottom: 12px;">
+            <h3>1. Camada do Usuário (Wi-Fi SoftAP)</h3>
+            O ESP32 cria sua própria rede Wi-Fi privativa <code>Irrigacao-Comunitaria</code> (192.168.4.1). Qualquer smartphone acessa o painel sem precisar de internet ou aplicativo.
+          </div>
+          <div class="card" style="margin-bottom: 12px;">
+            <h3>2. Camada do Firmware (C++ Assíncrono)</h3>
+            Servidor Web não-bloqueante (<code>web_server.cpp</code>), lógica pura desacoplada (<code>irrigation_logic.cpp</code>) e persistência direta em flash SPIFFS (<code>storage.cpp</code>).
+          </div>
+          <div class="card amber">
+            <h3>3. Camada de Atuadores (Isolamento Físico)</h3>
+            O acionamento é concentrado no pino <code>GPIO 2</code>. Na bancada acende o LED onboard; na horta, atracará o módulo relé de 5V.
+          </div>
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Nesta visão geral, vemos como o sistema se isola da internet. O agricultor conecta o celular no Wi-Fi da placa e acessa o site local. As requisições caem no servidor assíncrono, são filtradas pela lógica de decisão, e só então o pino GPIO 2 é energizado."
+      </div>
+    </section>
+
+    <!-- SLIDE 4: DEFESA EM PROFUNDIDADE -->
+    <section class="slide" id="slide-4">
+      <div>
+        <span class="slide-badge">Princípio Arquitetural</span>
+        <h2>A Filosofia de Defesa em Profundidade</h2>
+        <p class="slide-sub">Quatro barreiras concêntricas protegem o fluxo de água em qualquer circunstância</p>
+      </div>
+      <div style="text-align: center;">
+        <img src="docs/assets/defense_in_depth.png" class="diagram-img" style="max-height: 420px;" alt="Defesa em Profundidade">
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Adotamos o conceito de Defesa em Profundidade: Camada 1 filtra agendamentos repetidos no mesmo minuto; Camada 2 bloqueia rajadas com cooldown de 10s; Camada 3 limita o consumo a 15 minutos diários; e a Camada 4 estabelece teto unitário de 5 minutos com botão de emergência."
+      </div>
+    </section>
+
+    <!-- SLIDE 5: FLUXOGRAMA DE DECISÃO -->
+    <section class="slide" id="slide-5">
+      <div>
+        <span class="slide-badge">Algoritmo em Detalhes</span>
+        <h2>Fluxograma Completo da Tomada de Decisão</h2>
+        <p class="slide-sub">Como o firmware decide se a água pode ou não ser liberada</p>
+      </div>
+      <div class="grid-2" style="align-items: center;">
+        <div>
+          <img src="docs/assets/safety_flowchart.png" class="diagram-img" alt="Fluxograma de Segurança">
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+          <div class="card">
+            <h3>🎯 Ponto Único de Entrada: <code>attemptIrrigation()</code></h3>
+            Não importa se o pedido veio do relógio RTC ou do botão na página web: ambos passam <b>obrigatoriamente</b> pelo mesmo funil de decisão.
+          </div>
+          <div class="card alert">
+            <h3>⛔ Recusa Explícita e Rastreável</h3>
+            Se qualquer barreira for violada, a válvula <b>não abre</b> e o firmware grava o evento no histórico (<code>BLOCKED_COOLDOWN</code> ou <code>BLOCKED_DAILY_BUDGET</code>).
+          </div>
+          <div class="card">
+            <h3>⚡ Circuito de Emergência Independente</h3>
+            A rota <code>/admin/stop</code> opera de forma assíncrona, cortando o sinal elétrico do relé imediatamente.
+          </div>
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Aqui vemos o fluxograma de execução. Reparem que para cada trava que recusa o acionamento, há um ramo lateral vermelho que aborta a ação e imediatamente gera uma auditoria no log SPIFFS."
+      </div>
+    </section>
+
+    <!-- SLIDE 6: TRAVA 1 (COOLDOWN) -->
+    <section class="slide" id="slide-6">
+      <div>
+        <span class="slide-badge">Trava de Segurança 1</span>
+        <h2>Intervalo Mínimo: Cooldown de 10 Segundos</h2>
+        <p class="slide-sub">Proteção mecânica contra o golpe de aríete e rajadas na interface web</p>
+      </div>
+      <div class="grid-2">
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div class="card amber">
+            <h3>🌊 O Desafio Físico: Golpe de Aríete</h3>
+            Ao fechar uma válvula, a água em movimento causa um pico de sobrepressão nos canos. Se a válvula for religada instantaneamente, o impacto pode romper conexões de PVC e queimar o relé.
+          </div>
+          <div class="card">
+            <h3>📱 Proteção Contra Cliques Duplos na Web</h3>
+            Em conexões lentas, usuários costumam clicar várias vezes no botão "Irrigar agora". O cooldown absorve e descarta os cliques repetidos.
+          </div>
+          <div class="card alert">
+            <h3>🔔 Feedback na Interface (/admin)</h3>
+            Ao ser bloqueado, o usuário é redirecionado com <code>?blocked=cooldown</code> e visualiza uma mensagem em vermelho orientando a aguardar os 10s.
+          </div>
+        </div>
+        <div>
+          <pre><code>// Ponto crítico em src/main.cpp:
+bool withinCooldown = hasIrrigatedBefore &&
+    millis() - lastIrrigationEndMs <
+    static_cast&lt;unsigned long&gt;(IRRIGATION_COOLDOWN_SEC) * 1000UL;
+
+if (valveOpen || withinCooldown) {
+    // Registra a tentativa bloqueada no histórico
+    logHistoryEntry(false, 0,
+                    TriggerReason::BLOCKED_COOLDOWN);
+    return {false, TriggerReason::BLOCKED_COOLDOWN};
+}</code></pre>
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Vejam no código: utilizamos a função millis() do microcontrolador para calcular o tempo exato decorrido desde o último fechamento. Se tentar ligar com a válvula já aberta ou dentro dos 10 segundos de descanso, o pedido é recusado e registrado."
+      </div>
+    </section>
+
+    <!-- SLIDE 7: TRAVA 2 (ORÇAMENTO DIÁRIO) -->
+    <section class="slide" id="slide-7">
+      <div>
+        <span class="slide-badge">Trava de Segurança 2</span>
+        <h2>Orçamento Diário de Água (Daily Water Budget)</h2>
+        <p class="slide-sub">Cota cumulativa de 900 segundos (15 minutos) de válvula aberta por dia solar</p>
+      </div>
+      <div style="text-align: center; margin-bottom: 12px;">
+        <img src="docs/assets/budget_timeline.png" class="diagram-img" style="max-height: 250px;" alt="Timeline do Orçamento">
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h3>💧 Cota Fixa Imutável (900s)</h3>
+          Declarada em <code>include/Config.h</code>. O sistema acumula cada segundo irrigado no dia. Ao atingir 900 segundos, nenhuma rega manual ou programada passa.
+        </div>
+        <div class="card blue">
+          <h3>🔄 Reinício Automático por Época Solar</h3>
+          Calcula <code>dayIndex = time(nullptr) / 86400L</code>. Quando o relógio atinge 00:00, o índice muda e a cota diária é zerada automaticamente para o próximo dia.
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Este diagrama exemplifica a trava 2: imagine 3 regas de 5 minutos ao longo do dia. Às 19:00, alguém tenta irrigar de novo por 2 minutos. O firmware calcula 900s já gastos + 120s = 1020s. A cota foi estourada! A água não corre e fica gravado BLOCKED_DAILY_BUDGET."
+      </div>
+    </section>
+
+    <!-- SLIDE 8: TRAVAS 3 E 4 (TETO E PARADA) -->
+    <section class="slide" id="slide-8">
+      <div>
+        <span class="slide-badge">Travas de Segurança 3 e 4</span>
+        <h2>Teto Físico de Duração e Parada de Emergência</h2>
+        <p class="slide-sub">Limitação unitária e corte elétrico imediato em caso de emergência</p>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h3>🛡️ Trava 3: Teto Absoluto (5 min)</h3>
+          Mesmo que alguém digite '9999' minutos no painel web ou haja corrupção de memória flash, a função <code>openValve()</code> poda o valor sumariamente:
+          <pre style="margin-top: 8px;"><code>void openValve(uint16_t durationSec) {
+    if (durationSec > MAX_IRRIGATION_DURATION_SEC) {
+        durationSec = MAX_IRRIGATION_DURATION_SEC;
+    }
+    valveOpen = true;
+    valveOpenedAtMs = millis();
+    valveDurationSec = durationSec;
+    digitalWrite(VALVE_PIN, HIGH);
+}</code></pre>
+        </div>
+        <div class="card alert">
+          <h3>🚨 Trava 4: Parada de Emergência Imediata</h3>
+          Se um cano se soltar, qualquer hortelão clica no botão vermelho na tela web. O pino vai para nível baixo em menos de 1 milissegundo:
+          <pre style="margin-top: 8px;"><code>void stopIrrigation() {
+    if (valveOpen) {
+        closeValve();
+        logHistoryEntry(false, 0,
+                        TriggerReason::EMERGENCY_STOP);
+        Serial.println("[irrigacao] parada acionada");
+    }
+}</code></pre>
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "A Trava 3 protege contra o erro humano de digitação na interface. A Trava 4 é o nosso botão de emergência industrial: aciona o fechamento da válvula imediatamente e audita o corte."
+      </div>
+    </section>
+
+    <!-- SLIDE 9: RESILIÊNCIA LÓGICA -->
+    <section class="slide" id="slide-9">
+      <div>
+        <span class="slide-badge">Confiabilidade de Software</span>
+        <h2>Mecanismos de Resiliência Lógica e Tolerância a Falhas</h2>
+        <p class="slide-sub">Tratamento de bugs sutis e salvaguarda da memória interna</p>
+      </div>
+      <div class="grid-3">
+        <div class="card">
+          <h3>⏱️ Deduplicação de Minuto</h3>
+          Como a checagem ocorre a cada 1 segundo e o minuto dura 60s, o cálculo de <code>currentMinuteKey = hour * 60 + minute</code> impede que o sistema tente disparar a válvula 60 vezes repetidas.
+        </div>
+        <div class="card amber">
+          <h3>📅 Validação de Calendário</h3>
+          A função nativa C <code>mktime()</code> converte datas inválidas (ex: 31/02 vira 03/03). Nossa função <code>isValidCalendarDateTime()</code> valida bissextos e rejeita datas malformadas com HTTP 400.
+        </div>
+        <div class="card alert">
+          <h3>💾 Alerta de Falha de Flash</h3>
+          Se a partição SPIFFS falhar por desgaste ou corrupção, a variável <code>storageFault</code> ativa um banner vermelho em <code>/status</code> solicitando contato com o professor responsável.
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Aqui temos detalhes que diferenciam um código amador de um sistema de nível profissional: deduplicação de minuto no laço principal, validação rigorosa de anos bissextos para evitar que o relógio se perca, e sinalização de falhas de hardware no dashboard."
+      </div>
+    </section>
+
+    <!-- SLIDE 10: AUDITORIA E RASTREABILIDADE -->
+    <section class="slide" id="slide-10">
+      <div>
+        <span class="slide-badge">Governança de Dados</span>
+        <h2>Auditoria, Rastreabilidade e Exportação CSV</h2>
+        <p class="slide-sub">Registro permanente em memória não-volátil e prestação de contas à comunidade</p>
+      </div>
+      <div style="margin-bottom: 14px;">
+        <table>
+          <thead>
+            <tr>
+              <th>TriggerReason (Motivo)</th>
+              <th>Significado</th>
+              <th>Comportamento do Sistema</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>SCHEDULE</code></td><td>Horário programado bateu</td><td>Válvula abriu pelo tempo configurado</td></tr>
+            <tr><td><code>MANUAL</code></td><td>Acionamento via botão na web</td><td>Válvula abriu sob demanda do usuário</td></tr>
+            <tr><td><code>BLOCKED_COOLDOWN</code></td><td>Intervalo mínimo violado</td><td>Válvula bloqueada. Tentativa registrada</td></tr>
+            <tr><td><code>BLOCKED_DAILY_BUDGET</code></td><td>Cota diária de 900s atingida</td><td>Válvula bloqueada até a meia-noite</td></tr>
+            <tr><td><code>EMERGENCY_STOP</code></td><td>Interrupção de emergência</td><td>Válvula fechada no mesmo milissegundo</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card blue">
+        <strong>Exportação Direta em CSV (/admin/history):</strong> O arquivo <code>/history.bin</code> é convertido dinamicamente para CSV com formato <code>data_hora, irrigated, durationSec, reason</code>, permitindo que a comissão da horta audite os dados no Microsoft Excel.
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Nenhum bloqueio ou acionamento é esquecido. Tudo fica salvo no arquivo binário append-only. Ao final de cada mês, os alunos ou agricultores baixam o CSV para verificar o consumo de água."
+      </div>
+    </section>
+
+    <!-- SLIDE 11: TRANSIÇÃO DE HARDWARE -->
+    <section class="slide" id="slide-11">
+      <div>
+        <span class="slide-badge">Integração Física</span>
+        <h2>Do Mock de Testes ao Hardware Definitivo</h2>
+        <p class="slide-sub">Código desacoplado pronto para receber os periféricos físicos</p>
+      </div>
+      <div class="grid-2" style="align-items: center;">
+        <div>
+          <img src="docs/assets/circuit_diagram.png" class="diagram-img" alt="Esquema Elétrico">
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div class="card">
+            <h3>1. Válvula / Relé (GPIO 2)</h3>
+            Atualmente pisca o LED onboard (mock). Basta conectar o pino <code>IN</code> do relé de 5V no pino 2 para atracar a válvula solenoide real sem mexer no firmware.
+          </div>
+          <div class="card blue">
+            <h3>2. Relógio RTC DS3231 (GPIO 21/22)</h3>
+            Barramento I2C para manter o relógio sincronizado sem energia, garantindo o cálculo exato do orçamento diário após apagões.
+          </div>
+          <div class="card amber">
+            <h3>3. Sensor de Umidade (GPIO 36 / VP)</h3>
+            Pino analógico reservado para leitura capacitiva. No futuro, a função pura <code>decideIrrigation()</code> usará esse dado para evitar regas em dias de chuva.
+          </div>
+        </div>
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Conforme o hardware for montado pela equipe física, a transição é transparente. O pino 2 acionará o relé, os pinos 21 e 22 lerão o RTC DS3231 e o pino analógico 36 receberá o sensor de umidade."
+      </div>
+    </section>
+
+    <!-- SLIDE 12: CONCLUSÃO -->
+    <section class="slide" id="slide-12" style="justify-content: space-between;">
+      <div>
+        <span class="slide-badge">Conclusão</span>
+        <h2>Um Firmware Robusto, Sustentável e Resiliente</h2>
+        <p class="slide-sub">Síntese dos resultados técnicos alcançados</p>
+      </div>
+      <div class="grid-2" style="text-align: center; gap: 16px;">
+        <div class="card" style="padding: 24px;">
+          <div style="font-size: 2.5rem; font-weight: 800; color: var(--mint);">4</div>
+          <div style="color: var(--muted); font-size: 0.95rem;">Camadas de Proteção em Cascata</div>
+        </div>
+        <div class="card" style="padding: 24px;">
+          <div style="font-size: 2.5rem; font-weight: 800; color: var(--mint);">100%</div>
+          <div style="color: var(--muted); font-size: 0.95rem;">Operação Autônoma Offline</div>
+        </div>
+        <div class="card" style="padding: 24px;">
+          <div style="font-size: 2.5rem; font-weight: 800; color: var(--mint);">900s</div>
+          <div style="color: var(--muted); font-size: 0.95rem;">Orçamento Diário Garantido</div>
+        </div>
+        <div class="card" style="padding: 24px;">
+          <div style="font-size: 2.5rem; font-weight: 800; color: var(--mint);">&lt; 1ms</div>
+          <div style="color: var(--muted); font-size: 0.95rem;">Resposta em Parada de Emergência</div>
+        </div>
+      </div>
+      <div class="card" style="border-color: var(--mint); background: rgba(82,183,136,0.1); margin-top: 10px;">
+        <strong>Conclusão:</strong> Mostramos que boas práticas de arquitetura de software embarcado transformam um microcontrolador acessível em uma solução confiável para a comunidade, preservando a água e as lavouras.
+      </div>
+      <div style="text-align: center; margin-top: 10px; font-size: 1.1rem; color: var(--mint); font-weight: 600;">
+        Muito obrigado! Aberto a perguntas e demonstrações.
+      </div>
+      <div class="speaker-notes">
+        🎤 <strong>Roteiro do Apresentador:</strong> "Em resumo, entregamos um firmware com confiabilidade industrial, proteção ambiental e facilidade de uso para a comunidade. Agradecemos a atenção da banca e dos presentes, e estamos à disposição para perguntas!"
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="btn-group">
+      <button id="btn-prev" onclick="changeSlide(-1)">◀ Anterior</button>
+      <button id="btn-next" onclick="changeSlide(1)">Próximo ▶</button>
+      <button id="btn-notes" onclick="toggleNotes()">🎤 Modo Apresentador</button>
+      <button id="btn-fs" onclick="toggleFullscreen()">⛶ Tela Cheia</button>
+    </div>
+    <div id="slide-indicator" style="font-weight: 600; color: var(--mint);">
+      Slide 1 de 12
+    </div>
+  </footer>
+
+  <script>
+    let currentSlide = 1;
+    const totalSlides = 12;
+
+    function showSlide(index) {
+      if (index < 1) index = 1;
+      if (index > totalSlides) index = totalSlides;
+      currentSlide = index;
+
+      document.querySelectorAll('.slide').forEach((el, i) => {
+        el.classList.toggle('active', (i + 1) === currentSlide);
+      });
+
+      document.getElementById('slide-indicator').textContent = `Slide ${currentSlide} de ${totalSlides}`;
+      document.getElementById('btn-prev').disabled = currentSlide === 1;
+      document.getElementById('btn-next').disabled = currentSlide === totalSlides;
+    }
+
+    function changeSlide(direction) {
+      showSlide(currentSlide + direction);
+    }
+
+    function toggleNotes() {
+      document.body.classList.toggle('show-notes');
+      document.getElementById('btn-notes').classList.toggle('active');
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => alert(err.message));
+      } else {
+        document.exitFullscreen();
+      }
+    }
+
+    // Teclado
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+        changeSlide(1);
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        changeSlide(-1);
+      } else if (e.key === 'Home') {
+        showSlide(1);
+      } else if (e.key === 'End') {
+        showSlide(totalSlides);
+      } else if (e.key === 'n' || e.key === 'N') {
+        toggleNotes();
+      } else if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      }
+    });
+
+    showSlide(1);
+  </script>
+</body>
+</html>

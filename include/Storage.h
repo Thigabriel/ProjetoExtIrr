@@ -1,21 +1,9 @@
 #pragma once
 
 #include "Config.h"
-#include "History.h"
 
-// Contrato de persistência (SPIFFS/LittleFS). Implementado em src/storage.cpp.
-// Usado pelo módulo web (ler/gravar config, listar/exportar histórico) e
-// pelo loop principal (ler config, gravar novas entradas de histórico).
+// Persistência local da configuração do ESP32 em SPIFFS; o histórico é cloud.
 
 bool loadConfig(IrrigationConfig& outConfig);
 bool saveConfig(const IrrigationConfig& config);
 
-bool appendHistoryEntry(const HistoryEntry& entry);
-size_t historyCount();
-bool readHistoryEntry(size_t index, HistoryEntry& outEntry);
-bool clearHistory();
-
-// Uso do sistema de arquivos SPIFFS inteiro (não só o histórico) — usado
-// para o aviso antecipado de armazenamento perto de encher.
-size_t storageUsedBytes();
-size_t storageTotalBytes();

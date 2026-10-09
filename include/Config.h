@@ -2,15 +2,23 @@
 
 #include <cstdint>
 
-constexpr uint8_t MAX_SCHEDULE_SLOTS = 2;
+constexpr uint8_t MAX_SCHEDULE_SLOTS = 3;
 
 // Limites de segurança fixos no firmware — não editáveis pela interface web,
 // só recompilando. Ver README (Rotinas de segurança) para o racional de
 // cada um.
-constexpr uint16_t MAX_IRRIGATION_DURATION_SEC = 300; // teto absoluto por acionamento (5 min)
+constexpr uint8_t MAX_IRRIGATION_DURATION_MIN = 5;    // teto absoluto por acionamento
+constexpr uint16_t MAX_IRRIGATION_DURATION_SEC = MAX_IRRIGATION_DURATION_MIN * 60;
 constexpr uint16_t IRRIGATION_COOLDOWN_SEC = 10;      // intervalo mínimo entre acionamentos (fase de testes)
 constexpr uint32_t DAILY_WATER_BUDGET_SEC = 900;      // orçamento diário de válvula aberta (15 min)
-constexpr uint8_t STORAGE_WARNING_THRESHOLD_PERCENT = 80; // aviso antecipado antes do armazenamento encher
+
+inline uint16_t irrigationDurationMinutesToSeconds(float durationMin) {
+    if (!(durationMin > 0.0f)) return 0;
+    if (durationMin >= MAX_IRRIGATION_DURATION_MIN) return MAX_IRRIGATION_DURATION_SEC;
+
+    uint16_t durationSec = static_cast<uint16_t>(durationMin * 60.0f + 0.5f);
+    return durationSec == 0 ? 1 : durationSec;
+}
 
 struct ScheduleSlot {
     uint8_t hour;   // 0-23
@@ -26,5 +34,6 @@ struct IrrigationConfig {
     ScheduleSlot schedules[MAX_SCHEDULE_SLOTS];
     uint8_t scheduleCount;
 
-    uint16_t irrigationDurationSec; // duração da abertura da válvula ("intensidade")
+    float irrigationDurationMin; // duração da irrigação automática
+    float manualIrrigationDurationMin; // duração do acionamento manual
 };

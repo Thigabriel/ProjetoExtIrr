@@ -6,7 +6,7 @@ IrrigationDecision decideIrrigation(const IrrigationConfig& config,
     for (uint8_t i = 0; i < config.scheduleCount; i++) {
         const ScheduleSlot& slot = config.schedules[i];
         if (slot.enabled && slot.hour == currentHour && slot.minute == currentMinute) {
-            return {true, config.irrigationDurationSec};
+            return {true, irrigationDurationMinutesToSeconds(config.irrigationDurationMin)};
         }
     }
     return {false, 0};

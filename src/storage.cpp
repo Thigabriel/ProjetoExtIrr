@@ -5,16 +5,16 @@
 #include <FS.h>
 #include <SPIFFS.h>
 
-// Persistência em SPIFFS. Ambos os arquivos guardam os structs de Config.h/
-// History.h como bytes crus (sizeof(struct) por registro) — sem um formato
-// portável (sem JSON, sem endianness explícito): válido porque quem grava e
-// quem lê é sempre o mesmo firmware ESP32/Xtensa, então o layout é estável
-// entre boots. Se os structs mudarem de forma incompatível, os arquivos
-// antigos devem ser apagados (voltam a valores padrão / histórico vazio).
+// Persistência da configuração em SPIFFS. O histórico de irrigação vai para
+// o Google Sheets e não é gravado na flash.
 namespace {
 
 constexpr const char* CONFIG_PATH = "/config.bin";
-constexpr const char* HISTORY_PATH = "/history.bin";
+struct LegacyIrrigationConfig {
+    ScheduleSlot schedules[MAX_SCHEDULE_SLOTS];
+    uint8_t scheduleCount;
+    float irrigationDurationMin;
+};
 
 bool mounted = false;
 bool mountAttempted = false;
@@ -36,7 +36,8 @@ void applyDefaultConfig(IrrigationConfig& config) {
         config.schedules[i].enabled = false;
     }
 
-    config.irrigationDurationSec = 10;
+    config.irrigationDurationMin = 1.0f;
+    config.manualIrrigationDurationMin = 1.0f;
 }
 
 } // namespace
@@ -59,14 +60,40 @@ bool loadConfig(IrrigationConfig& outConfig) {
         return false;
     }
 
+    if (file.size() == sizeof(LegacyIrrigationConfig)) {
+        LegacyIrrigationConfig oldConfig{};
+        bool migrated = file.read(reinterpret_cast<uint8_t*>(&oldConfig), sizeof(oldConfig)) == sizeof(oldConfig);
+        file.close();
+        if (!migrated) {
+            applyDefaultConfig(outConfig);
+            return false;
+        }
+        memcpy(outConfig.schedules, oldConfig.schedules, sizeof(outConfig.schedules));
+        outConfig.scheduleCount = oldConfig.scheduleCount;
+        outConfig.irrigationDurationMin = oldConfig.irrigationDurationMin;
+        outConfig.manualIrrigationDurationMin = 1.0f;
+        saveConfig(outConfig);
+        return true;
+    }
+
     bool ok = file.size() == sizeof(IrrigationConfig) &&
-              file.read(reinterpret_cast<uint8_t*>(&outConfig), sizeof(IrrigationConfig)) ==
-                  sizeof(IrrigationConfig);
+              file.read(reinterpret_cast<uint8_t*>(&outConfig), sizeof(IrrigationConfig)) == sizeof(IrrigationConfig);
     file.close();
 
     if (!ok) {
         applyDefaultConfig(outConfig);
         return false;
+    }
+
+    if (!(outConfig.irrigationDurationMin >= 0.0f)) {
+        outConfig.irrigationDurationMin = 0.0f;
+    } else if (outConfig.irrigationDurationMin > MAX_IRRIGATION_DURATION_MIN) {
+        outConfig.irrigationDurationMin = MAX_IRRIGATION_DURATION_MIN;
+    }
+    if (!(outConfig.manualIrrigationDurationMin >= 0.0f)) {
+        outConfig.manualIrrigationDurationMin = 0.0f;
+    } else if (outConfig.manualIrrigationDurationMin > MAX_IRRIGATION_DURATION_MIN) {
+        outConfig.manualIrrigationDurationMin = MAX_IRRIGATION_DURATION_MIN;
     }
 
     return true;
@@ -88,76 +115,3 @@ bool saveConfig(const IrrigationConfig& config) {
     return written == sizeof(IrrigationConfig);
 }
 
-bool appendHistoryEntry(const HistoryEntry& entry) {
-    if (!ensureMounted()) {
-        return false;
-    }
-
-    File file = SPIFFS.open(HISTORY_PATH, FILE_APPEND);
-    if (!file) {
-        return false;
-    }
-
-    size_t written = file.write(reinterpret_cast<const uint8_t*>(&entry), sizeof(HistoryEntry));
-    file.close();
-
-    return written == sizeof(HistoryEntry);
-}
-
-size_t historyCount() {
-    if (!ensureMounted() || !SPIFFS.exists(HISTORY_PATH)) {
-        return 0;
-    }
-
-    File file = SPIFFS.open(HISTORY_PATH, FILE_READ);
-    if (!file) {
-        return 0;
-    }
-
-    size_t count = file.size() / sizeof(HistoryEntry);
-    file.close();
-
-    return count;
-}
-
-bool readHistoryEntry(size_t index, HistoryEntry& outEntry) {
-    if (!ensureMounted() || !SPIFFS.exists(HISTORY_PATH)) {
-        return false;
-    }
-
-    File file = SPIFFS.open(HISTORY_PATH, FILE_READ);
-    if (!file) {
-        return false;
-    }
-
-    size_t offset = index * sizeof(HistoryEntry);
-    bool ok = false;
-    if (offset + sizeof(HistoryEntry) <= file.size() && file.seek(offset, SeekSet)) {
-        ok = file.read(reinterpret_cast<uint8_t*>(&outEntry), sizeof(HistoryEntry)) == sizeof(HistoryEntry);
-    }
-    file.close();
-
-    return ok;
-}
-
-bool clearHistory() {
-    if (!ensureMounted()) {
-        return false;
-    }
-
-    if (!SPIFFS.exists(HISTORY_PATH)) {
-        return true;
-    }
-
-    return SPIFFS.remove(HISTORY_PATH);
-}
-
-size_t storageUsedBytes() {
-    if (!ensureMounted()) return 0;
-    return SPIFFS.usedBytes();
-}
-
-size_t storageTotalBytes() {
-    if (!ensureMounted()) return 0;
-    return SPIFFS.totalBytes();
-}

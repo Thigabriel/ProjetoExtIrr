@@ -4,6 +4,8 @@
 #include <time.h>
 
 #include "Config.h"
+#include "CloudConfig.h"
+#include "CloudHistory.h"
 #include "History.h"
 #include "Storage.h"
 #include "irrigation_logic.h"
@@ -11,8 +13,8 @@
 
 // Sem hardware ainda: VALVE_PIN pisca o LED onboard no lugar do relé da
 // válvula solenoide. Sem sensor de umidade nesta fase (irrigação é só por
-// horário programado) e sem RTC externo (DS3231): o relógio começa em
-// 1970-01-01 00:00:00 a cada boot. Trocar por hardware real quando chegar.
+// horário programado) e sem RTC externo (DS3231): o relógio é sincronizado
+// pela internet via NTP quando o Wi-Fi do local está disponível.
 namespace {
 
 constexpr uint8_t VALVE_PIN = 2;
@@ -20,6 +22,9 @@ constexpr uint8_t VALVE_PIN = 2;
 // QR code do equipamento deve ser gerado/impresso a partir destas credenciais.
 constexpr const char* AP_SSID = "Irrigacao-Comunitaria";
 constexpr const char* AP_PASSWORD = "irrigacao";
+constexpr const char* WIFI_SSID = WifiConfig::SSID;
+constexpr const char* WIFI_PASSWORD = WifiConfig::PASSWORD;
+constexpr time_t VALID_TIME_EPOCH = 1704067200; // 2024-01-01 UTC
 
 AsyncWebServer server(80);
 IrrigationConfig config;
@@ -29,7 +34,7 @@ unsigned long valveOpenedAtMs = 0;
 uint16_t valveDurationSec = 0;
 
 // Rotinas de segurança: ver README (Rotinas de segurança) para o racional.
-bool storageFault = false; // true se uma gravação em SPIFFS falhar (config ou histórico)
+bool storageFault = false; // true se uma gravação da configuração em SPIFFS falhar
 
 unsigned long lastIrrigationEndMs = 0;
 bool hasIrrigatedBefore = false; // false até a primeira válvula fechar nesta sessão (cooldown não se aplica antes disso)
@@ -45,9 +50,13 @@ void getCurrentTime(uint8_t& hour, uint8_t& minute) {
     minute = static_cast<uint8_t>(timeinfo.tm_min);
 }
 
+bool isSystemTimeValid() {
+    return time(nullptr) >= VALID_TIME_EPOCH;
+}
+
 // Ponto único de acionamento: aplica o teto absoluto de duração (rotina de
-// segurança 1.1) não importa de onde veio o pedido (agendado, manual, ou um
-// valor corrompido lido do SPIFFS).
+// segurança 1.1) não importa de onde veio o pedido (agendado, manual ou um
+// valor inválido lido da configuração persistida).
 void openValve(uint16_t durationSec) {
     if (durationSec > MAX_IRRIGATION_DURATION_SEC) {
         durationSec = MAX_IRRIGATION_DURATION_SEC;
@@ -65,6 +74,14 @@ void closeValve() {
     hasIrrigatedBefore = true;
 }
 
+uint16_t remainingValveSeconds() {
+    if (!valveOpen) return 0;
+    unsigned long durationMs = static_cast<unsigned long>(valveDurationSec) * 1000UL;
+    unsigned long elapsedMs = millis() - valveOpenedAtMs;
+    if (elapsedMs >= durationMs) return 0;
+    return static_cast<uint16_t>((durationMs - elapsedMs + 999UL) / 1000UL);
+}
+
 void updateValve() {
     if (valveOpen && millis() - valveOpenedAtMs >= static_cast<unsigned long>(valveDurationSec) * 1000UL) {
         closeValve();
@@ -78,16 +95,14 @@ void logHistoryEntry(bool irrigated, uint16_t durationSec, TriggerReason reason)
     entry.irrigated = irrigated;
     entry.durationSec = durationSec;
     entry.reason = reason;
-    if (!appendHistoryEntry(entry)) {
-        storageFault = true;
+    if (!CloudHistory::enqueue(entry)) {
+        Serial.println("[sheets] fila de envio cheia; registro nao enfileirado");
     }
 }
 
 // Orçamento diário (rotina de segurança 1.3): "dia" é derivado do relógio do
-// sistema (ajustado manualmente em /admin/time, sem RTC ainda). Antes de o
-// relógio ser ajustado, o epoch fica parado em zero, então o índice de dia
-// também fica parado — o orçamento só começa a zerar de fato por virada de
-// dia depois que o horário real for configurado.
+// sistema sincronizado por NTP. Antes da sincronização, os agendamentos ficam
+// suspensos; o contador diário só usa datas válidas depois disso.
 void resetDailyBudgetIfNewDay() {
     int32_t dayIndex = static_cast<int32_t>(time(nullptr) / 86400L);
     if (dayIndex != dailyBudgetDayIndex) {
@@ -102,8 +117,8 @@ struct AttemptResult {
 };
 
 // Ponto único de disparo de irrigação (agendada ou manual): aplica cooldown
-// (1.2) e orçamento diário (1.3) antes de abrir a válvula, e registra o
-// resultado no histórico em qualquer caso — inclusive quando bloqueada.
+// (1.2) e orçamento diário (1.3) antes de abrir a válvula, e enfileira o
+// resultado para o histórico cloud em qualquer caso — inclusive bloqueios.
 AttemptResult attemptIrrigation(uint16_t requestedDurationSec, TriggerReason reason) {
     // valveOpen cobre o caso de um novo pedido chegar enquanto a válvula
     // anterior ainda está aberta (cooldown por tempo só é checado depois que
@@ -160,6 +175,10 @@ void stopIrrigation() {
 // tentaria reabrir a válvula repetidamente enquanto o relógio permanece
 // naquele minuto.
 void evaluateIrrigation() {
+    if (!isSystemTimeValid()) {
+        return;
+    }
+
     uint8_t hour, minute;
     getCurrentTime(hour, minute);
 
@@ -190,13 +209,16 @@ void setup() {
     pinMode(VALVE_PIN, OUTPUT);
     digitalWrite(VALVE_PIN, LOW);
 
-    struct timeval epoch = {0, 0};
-    settimeofday(&epoch, nullptr);
-
     loadConfig(config);
 
+    WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    WebServer::begin(server, config, valveOpen, storageFault, manualIrrigate, stopIrrigation);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    configTime(-3 * 60 * 60, 0, "pool.ntp.org", "time.google.com");
+    CloudHistory::begin();
+
+    WebServer::begin(server, config, valveOpen, storageFault, remainingValveSeconds, manualIrrigate, stopIrrigation);
     server.begin();
 
     Serial.printf("[boot] AP \"%s\" ativo, IP %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
@@ -204,6 +226,19 @@ void setup() {
 
 void loop() {
     updateValve();
+
+    static bool stationReported = false;
+    if (!stationReported && WiFi.status() == WL_CONNECTED) {
+        stationReported = true;
+        Serial.printf("[wifi] conectado a %s, IP %s; painel http://%s/remote\n", WIFI_SSID,
+                      WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str());
+    }
+
+    static bool timeReported = false;
+    if (!timeReported && isSystemTimeValid()) {
+        timeReported = true;
+        Serial.println("[ntp] horario sincronizado");
+    }
 
     static unsigned long lastEvalMs = 0;
     unsigned long nowMs = millis();

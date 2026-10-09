@@ -2,32 +2,30 @@
 
 #include <Arduino.h>
 #include <cstdio>
-#include <cstring>
-#include <sys/time.h>
 #include <time.h>
+#include <WiFi.h>
 
-#include "History.h"
+#include "CloudHistory.h"
 #include "Routes.h"
 #include "Storage.h"
 
 namespace {
 
-const char* reasonToString(TriggerReason reason) {
-    switch (reason) {
-        case TriggerReason::SCHEDULE:
-            return "SCHEDULE";
-        case TriggerReason::MANUAL:
-            return "MANUAL";
-        case TriggerReason::SKIPPED:
-            return "SKIPPED";
-        case TriggerReason::BLOCKED_COOLDOWN:
-            return "BLOCKED_COOLDOWN";
-        case TriggerReason::BLOCKED_DAILY_BUDGET:
-            return "BLOCKED_DAILY_BUDGET";
-        case TriggerReason::EMERGENCY_STOP:
-            return "EMERGENCY_STOP";
+String formatDurationMinutes(float durationMin) {
+    String formatted = String(durationMin, 3);
+    while (formatted.endsWith("0")) {
+        formatted.remove(formatted.length() - 1);
     }
-    return "UNKNOWN";
+    if (formatted.endsWith(".")) {
+        formatted.remove(formatted.length() - 1);
+    }
+    return formatted;
+}
+
+void durationParts(float durationMin, uint16_t& minutes, uint8_t& seconds) {
+    uint16_t totalSeconds = irrigationDurationMinutesToSeconds(durationMin);
+    minutes = totalSeconds / 60;
+    seconds = totalSeconds % 60;
 }
 
 // CSS compartilhado entre /status e /admin. Sem dependências externas
@@ -58,7 +56,7 @@ constexpr const char* PAGE_STYLE =
     ".stat span:first-child{color:var(--muted)}"
     ".stat span:last-child{font-weight:600;text-align:right}"
     "label{display:block;font-size:.85rem;color:var(--muted);margin:12px 0 4px}"
-    "input[type=number],input[type=datetime-local]{"
+    "input[type=number]{"
     "width:100%;padding:10px 12px;border:1px solid #d6ddd8;border-radius:10px;font-size:1rem;background:#fbfcfb}"
     ".slot{border:1px solid #e3e8e4;border-radius:12px;padding:10px 12px;margin-bottom:8px;"
     "display:flex;align-items:center;gap:10px;flex-wrap:wrap}"
@@ -70,10 +68,15 @@ constexpr const char* PAGE_STYLE =
     "button.danger{background:#fdece9;color:var(--danger)}"
     "a.link{display:inline-block;margin-top:4px;color:var(--green-dark);font-weight:600;text-decoration:none}"
     ".muted{color:var(--muted);font-size:.85rem;margin:4px 0 0}"
-    ".bar{height:10px;border-radius:6px;background:#eef1ee;overflow:hidden;margin-top:8px}"
-    ".bar-fill{height:100%;background:var(--green);width:0%}"
-    ".bar-fill.warn{background:#c9821f}"
-    ".bar-fill.danger{background:var(--danger)}"
+    ".notice{display:none;border:1px solid #e6b8b4;color:var(--danger)}"
+    ".remote{max-width:960px}"
+    ".table-wrap{overflow-x:auto;max-height:420px;margin-top:12px}"
+    "table{width:100%;border-collapse:collapse;font-size:.85rem;white-space:nowrap}"
+    "th,td{padding:9px 8px;border-bottom:1px solid #eef1ee;text-align:left}"
+    "th{position:sticky;top:0;background:var(--card);color:var(--muted);font-weight:600}"
+    ".progress{height:12px;background:#eef1ee;border-radius:999px;overflow:hidden;margin:10px 0}"
+    ".progress div{height:100%;background:var(--green)}"
+    "button:disabled{opacity:.55;cursor:not-allowed}"
     "</style>";
 
 String htmlHead(const char* title) {
@@ -82,17 +85,17 @@ String htmlHead(const char* title) {
            title + "</title>" + PAGE_STYLE;
 }
 
-String buildStatusJson(const IrrigationConfig& config, bool valveOpen, bool storageFault) {
-    size_t usedBytes = storageUsedBytes();
-    size_t totalBytes = storageTotalBytes();
-    uint8_t storagePercent = totalBytes > 0 ? static_cast<uint8_t>((usedBytes * 100ULL) / totalBytes) : 0;
-
+String buildStatusJson(const IrrigationConfig& config, bool valveOpen, uint16_t valveRemainingSec, bool storageFault) {
     String json = "{\"valveOpen\":" + String(valveOpen ? "true" : "false") +
+                  ",\"valveRemainingSec\":" + String(valveRemainingSec) +
                   ",\"currentEpoch\":" + String(static_cast<uint32_t>(time(nullptr))) +
+                  ",\"clockSynchronized\":" + String(time(nullptr) >= 1704067200 ? "true" : "false") +
+                  ",\"stationConnected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") +
+                  ",\"stationIp\":\"" + WiFi.localIP().toString() + "\"" +
+                  ",\"cloudConfigured\":" + String(CloudHistory::isConfigured() ? "true" : "false") +
+                  ",\"cloudConnected\":" + String(CloudHistory::isConnected() ? "true" : "false") +
+                  ",\"cloudPending\":" + String(CloudHistory::pendingCount()) +
                   ",\"storageFault\":" + (storageFault ? "true" : "false") +
-                  ",\"storageUsedBytes\":" + String(usedBytes) +
-                  ",\"storageTotalBytes\":" + String(totalBytes) +
-                  ",\"storagePercent\":" + String(storagePercent) +
                   ",\"config\":{\"schedules\":[";
     for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
         const ScheduleSlot& slot = config.schedules[i];
@@ -102,19 +105,10 @@ String buildStatusJson(const IrrigationConfig& config, bool valveOpen, bool stor
                 ",\"enabled\":" + (slot.enabled ? "true" : "false") + "}";
     }
     json += "],\"scheduleCount\":" + String(config.scheduleCount) +
-            ",\"irrigationDurationSec\":" + String(config.irrigationDurationSec) +
+            ",\"irrigationDurationMin\":" + formatDurationMinutes(config.irrigationDurationMin) +
+            ",\"manualIrrigationDurationMin\":" + formatDurationMinutes(config.manualIrrigationDurationMin) +
             "}";
 
-    size_t count = historyCount();
-    HistoryEntry lastEntry;
-    if (count > 0 && readHistoryEntry(count - 1, lastEntry)) {
-        json += ",\"lastEntry\":{\"timestamp\":" + String(lastEntry.timestamp) +
-                ",\"irrigated\":" + (lastEntry.irrigated ? "true" : "false") +
-                ",\"durationSec\":" + String(lastEntry.durationSec) +
-                ",\"reason\":\"" + reasonToString(lastEntry.reason) + "\"}";
-    } else {
-        json += ",\"lastEntry\":null";
-    }
     json += "}";
     return json;
 }
@@ -124,90 +118,112 @@ String buildStatusHtml() {
         "</head><body>"
         "<header><h1>Irrigacao Comunitaria</h1><p>Horta local</p></header>"
         "<main>"
-        "<div id=\"faultCard\" class=\"card\" style=\"display:none;border:2px solid var(--danger);\">"
+        "<div id=\"faultCard\" class=\"card notice\">"
         "<h2 style=\"color:var(--danger)\">Falha detectada</h2>"
-        "<p>O sistema encontrou um problema de armazenamento e pode nao estar funcionando "
-        "corretamente. Entre em contato com o professor responsavel pelo projeto.</p>"
+        "<p>O sistema nao conseguiu salvar uma configuracao no armazenamento interno. "
+        "Entre em contato com o professor responsavel pelo projeto.</p>"
         "</div>"
         "<div class=\"card\" style=\"text-align:center\">"
         "<span id=\"valveBadge\" class=\"badge off\"><span class=\"dot\"></span>"
         "<span id=\"valveText\">Carregando...</span></span>"
+        "<div class=\"stat\"><span>Tempo para fechamento</span><span id=\"valveCountdown\">--</span></div>"
         "</div>"
-        "<div class=\"card\"><h2>Horario do sistema</h2>"
+        "<div class=\"card\"><h2>Data e hora</h2>"
         "<div class=\"stat\"><span>Agora</span><span id=\"now\">--</span></div>"
+        "<div class=\"stat\"><span>Internet</span><span id=\"network\">Verificando</span></div>"
         "</div>"
-        "<div class=\"card\"><h2>Ultimo evento registrado</h2>"
-        "<div class=\"stat\"><span>Quando</span><span id=\"lastWhen\">--</span></div>"
-        "<div class=\"stat\"><span>Resultado</span><span id=\"lastResult\">--</span></div>"
+        "<div id=\"actionNotice\" class=\"card notice\"></div>"
+        "<div class=\"card\"><h2>Controle da irrigacao</h2>"
+        "<p class=\"muted\">Duracao manual: <strong id=\"duration\">--</strong></p>"
+        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_IRRIGATE) + "\">"
+        "<input type=\"hidden\" name=\"durationMinutes\" id=\"durationMinutes\">"
+        "<input type=\"hidden\" name=\"durationSeconds\" id=\"durationSeconds\">"
+        "<button type=\"submit\" id=\"irrigateButton\" disabled>Irrigar agora</button></form>"
+        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_STOP) + "\">"
+        "<button type=\"submit\" class=\"danger\" id=\"stopButton\" disabled>Parar irrigacao</button></form>"
         "</div>"
-        "<div class=\"card\"><h2>Horarios programados</h2>"
-        "<div id=\"schedules\">--</div>"
+        "<a class=\"link\" href=\"" + String(Routes::REMOTE) + "\">Abrir painel completo &rarr;</a>"
+        "<div class=\"card\"><h2>Ultima vez irrigado</h2>"
+        "<div class=\"stat\"><span>Data e hora</span><span id=\"lastWhen\">--</span></div>"
+        "<div class=\"stat\"><span>Duracao</span><span id=\"lastDuration\">--</span></div>"
         "</div>"
-        "<div class=\"card\"><h2>Armazenamento</h2>"
-        "<div class=\"stat\"><span>Historico usado</span><span id=\"storageText\">--</span></div>"
-        "<div class=\"bar\"><div id=\"storageBar\" class=\"bar-fill\"></div></div>"
-        "<p id=\"storageWarning\" class=\"muted\" style=\"display:none;color:var(--danger)\">"
-        "Armazenamento perto de encher — considere baixar e zerar o historico.</p>"
-        "</div>"
-        "<a class=\"link\" href=\"" + String(Routes::ADMIN) + "\">Ir para administracao &rarr;</a>"
         "</main>"
         "<script>"
         "function pad(n){return String(n).padStart(2,'0');}"
-        "function fmtTime(s){var h=Math.floor(s/3600)%24,m=Math.floor(s/60)%60;return pad(h)+':'+pad(m);}"
-        // new Date(e*1000).toLocaleString() aplica o fuso horario REAL do
-        // navegador, mas o epoch aqui e' um relogio "ingenuo" (definido via
-        // /admin/time sem conversao de fuso). Por isso usamos os getters
-        // *UTC* do Date, que leem os campos de volta sem aplicar deslocamento.
-        "function fmtEpoch(e){if(!e)return '--';var d=new Date(e*1000);"
-        "return pad(d.getUTCDate())+'/'+pad(d.getUTCMonth()+1)+'/'+d.getUTCFullYear()+' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes());}"
-        "function reasonLabel(r){return {SCHEDULE:'Irrigou (horario)',MANUAL:'Manual',"
-        "BLOCKED_COOLDOWN:'Bloqueado (cooldown)',BLOCKED_DAILY_BUDGET:'Bloqueado (orcamento diario)',"
-        "EMERGENCY_STOP:'Parada de emergencia'}[r]||r;}"
-        "var STORAGE_WARN_PCT=" + String(STORAGE_WARNING_THRESHOLD_PERCENT) + ";"
+        "var projectTimeZone='America/Sao_Paulo';"
+        "function fmtEpoch(e,timeZone){if(!e)return '--';return new Intl.DateTimeFormat('pt-BR',{timeZone:timeZone||projectTimeZone,dateStyle:'short',timeStyle:'short'}).format(new Date(e*1000));}"
+        "function formatDuration(seconds){var minutes=Math.floor(seconds/60),rest=seconds%60;"
+        "return (minutes?minutes+' min':'')+(minutes&&rest?' ':'')+(rest?rest+' s':'')||'0 s';}"
+        "var valveDeadline=0;"
+        "function updateValveCountdown(){var remaining=Math.max(0,Math.ceil((valveDeadline-Date.now())/1000));"
+        "document.getElementById('valveCountdown').textContent=valveDeadline?(remaining?formatDuration(remaining):'Fechando...'):'Valvula fechada';}"
         "function refresh(){"
         "fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
         "document.getElementById('faultCard').style.display=d.storageFault?'block':'none';"
-        "var pct=d.storagePercent;"
-        "document.getElementById('storageText').textContent=pct+'% ('+Math.round(d.storageUsedBytes/1024)+'KB de '+Math.round(d.storageTotalBytes/1024)+'KB)';"
-        "var bar=document.getElementById('storageBar');"
-        "bar.style.width=pct+'%';"
-        "bar.className='bar-fill'+(pct>=95?' danger':(pct>=STORAGE_WARN_PCT?' warn':''));"
-        "document.getElementById('storageWarning').style.display=pct>=STORAGE_WARN_PCT?'block':'none';"
         "var badge=document.getElementById('valveBadge');"
         "badge.className='badge '+(d.valveOpen?'on':'off');"
         "document.getElementById('valveText').textContent=d.valveOpen?'Irrigando agora':'Aguardando';"
-        "document.getElementById('now').textContent=fmtTime(d.currentEpoch);"
-        "if(d.lastEntry){"
-        "document.getElementById('lastWhen').textContent=fmtEpoch(d.lastEntry.timestamp);"
-        "document.getElementById('lastResult').textContent=reasonLabel(d.lastEntry.reason);"
-        "}else{"
-        "document.getElementById('lastWhen').textContent='Nenhum evento ainda';"
-        "document.getElementById('lastResult').textContent='--';"
-        "}"
-        "var s='';"
-        "d.config.schedules.forEach(function(slot,i){"
-        "if(!slot.enabled)return;"
-        "s+='<div class=\"stat\"><span>Slot '+i+'</span><span>'+pad(slot.hour)+':'+pad(slot.minute)+'</span></div>';"
-        "});"
-        "document.getElementById('schedules').innerHTML=s||'<p class=\"muted\">Nenhum horario ativo</p>';"
+        "valveDeadline=d.valveOpen?Date.now()+Number(d.valveRemainingSec||0)*1000:0;updateValveCountdown();"
+        "document.getElementById('now').textContent=fmtEpoch(d.currentEpoch);"
+        "document.getElementById('network').textContent=d.stationConnected?'Conectado ('+d.stationIp+')':'Sem internet';"
+        "var duration=Math.round(Number(d.config.manualIrrigationDurationMin)*60);"
+        "document.getElementById('duration').textContent=formatDuration(duration);"
+        "document.getElementById('durationMinutes').value=Math.floor(duration/60);"
+        "document.getElementById('durationSeconds').value=duration%60;"
+        "document.getElementById('irrigateButton').textContent='Irrigar agora por '+formatDuration(duration);"
+        "document.getElementById('irrigateButton').disabled=d.valveOpen;"
+        "document.getElementById('stopButton').disabled=!d.valveOpen;"
         "});"
         "}"
-        "refresh();setInterval(refresh,5000);"
+        "function refreshLastIrrigation(){fetch('" + String(Routes::CLOUD_HISTORY_JSON) + "').then(function(r){return r.json();}).then(function(d){"
+        "if(d.timeZone)projectTimeZone=d.timeZone;"
+        "var entry=(d.history||[]).find(function(item){return item.irrigated;});"
+        "document.getElementById('lastWhen').textContent=entry?fmtEpoch(entry.timestamp,d.timeZone):'Nenhuma irrigacao registrada';"
+        "document.getElementById('lastDuration').textContent=entry?formatDuration(entry.durationSec):'--';});}"
+        "var params=new URLSearchParams(location.search),notice=document.getElementById('actionNotice');"
+        "if(params.get('blocked')==='cooldown'){notice.textContent='Aguarde o intervalo minimo entre irrigacoes.';notice.style.display='block';}"
+        "if(params.get('blocked')==='budget'){notice.textContent='O limite diario de irrigacao foi atingido.';notice.style.display='block';}"
+        "refresh();refreshLastIrrigation();setInterval(refresh,5000);setInterval(refreshLastIrrigation,30000);"
+        "setInterval(updateValveCountdown,1000);"
         "</script>"
         "</body></html>";
     return html;
 }
 
-String buildAdminFormHtml(const IrrigationConfig& config, const String& notice) {
+String buildAdminFormHtml(const IrrigationConfig& config, const String& notice, bool valveOpen,
+                          bool storageFault) {
     bool anyScheduleActive = false;
+    uint16_t durationMinutes;
+    uint8_t durationSeconds;
+    durationParts(config.irrigationDurationMin, durationMinutes, durationSeconds);
+    uint16_t manualDurationMinutes;
+    uint8_t manualDurationSeconds;
+    durationParts(config.manualIrrigationDurationMin, manualDurationMinutes, manualDurationSeconds);
     for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
         if (config.schedules[i].enabled) anyScheduleActive = true;
     }
 
-    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Admin") +
+    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Painel completo") +
         "</head><body>"
-        "<header><h1>Administracao</h1><p>Irrigacao Comunitaria</p></header>"
-        "<main>";
+        "<header><h1>Painel completo</h1><p>Irrigacao Comunitaria</p></header>"
+        "<main class=\"remote\">"
+        "<div class=\"card\"><h2>Estado do sistema</h2>"
+        "<div class=\"stat\"><span>Valvula</span><span>" + String(valveOpen ? "Irrigando" : "Fechada") + "</span></div>"
+        "<div class=\"stat\"><span>Data e hora</span><span id=\"remoteNow\">--</span></div>"
+        "<div class=\"stat\"><span>Wi-Fi</span><span id=\"remoteNetwork\">Verificando</span></div>"
+        "<div class=\"stat\"><span>Falha ao salvar configuracao</span><span>" + String(storageFault ? "Sim" : "Nao") + "</span></div>"
+        "</div>"
+        "<div class=\"card\"><h2>Google Sheets</h2>"
+        "<div class=\"stat\"><span>Estado</span><span id=\"cloudState\">Verificando</span></div>"
+        "<div class=\"stat\"><span>Na fila de envio</span><span id=\"cloudPending\">0</span></div>"
+        "<a id=\"spreadsheetLink\" class=\"link\" style=\"display:none\" target=\"_blank\" rel=\"noopener\">Abrir planilha</a>"
+        "</div>"
+        "<div class=\"card\"><h2>Historico recente</h2>"
+        "<p id=\"historyCount\" class=\"muted\">Carregando registros...</p>"
+        "<p id=\"historyError\" class=\"muted\"></p>"
+        "<div class=\"table-wrap\"><table><thead><tr><th>Data e hora</th><th>Irrigou?</th><th>Duracao</th><th>Motivo</th></tr></thead>"
+        "<tbody id=\"historyRows\"></tbody></table></div>"
+        "</div>";
 
     if (notice.length() > 0) {
         html += "<div class=\"card\" style=\"border:2px solid var(--danger);\"><p style=\"margin:0\">" +
@@ -220,30 +236,6 @@ String buildAdminFormHtml(const IrrigationConfig& config, const String& notice) 
     }
 
     html +=
-        "<div class=\"card\"><h2>Horario do sistema</h2>"
-        "<p class=\"muted\">Sem RTC ainda: defina a hora atual manualmente. Ela reinicia toda vez "
-        "que o ESP32 desliga ou reseta.</p>"
-        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_TIME) + "\">"
-        "<label>Data e hora atuais</label>"
-        "<input type=\"datetime-local\" name=\"datetime\" required>"
-        "<button type=\"submit\">Definir horario</button>"
-        "</form></div>"
-
-        "<div class=\"card\"><h2>Irrigacao manual</h2>"
-        "<p class=\"muted\">Abre a valvula agora, pelo tempo indicado (maximo " +
-        String(MAX_IRRIGATION_DURATION_SEC) +
-        "s), sem esperar horario. Sujeita ao cooldown e ao orcamento diario.</p>"
-        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_IRRIGATE) + "\">"
-        "<label>Duracao (segundos)</label>"
-        "<input type=\"number\" min=\"1\" max=\"" + String(MAX_IRRIGATION_DURATION_SEC) +
-        "\" name=\"durationSec\" value=\"" + String(config.irrigationDurationSec) + "\">"
-        "<button type=\"submit\">Irrigar agora</button>"
-        "</form>"
-        "<form method=\"POST\" action=\"" + String(Routes::ADMIN_STOP) +
-        "\" onsubmit=\"return confirm('Fechar a valvula agora?');\">"
-        "<button type=\"submit\" class=\"danger\">Parar irrigacao agora</button></form>"
-        "</div>"
-
         "<div class=\"card\"><form method=\"POST\" action=\"" + String(Routes::ADMIN_CONFIG) + "\">"
         "<h2>Horarios de irrigacao</h2>";
 
@@ -259,158 +251,48 @@ String buildAdminFormHtml(const IrrigationConfig& config, const String& notice) 
                 (slot.enabled ? " checked" : "") + "> Slot " + String(i) + " ativo</label></div>";
     }
 
-    html += "<h2>Duracao da irrigacao</h2>"
-            "<label>Duracao (segundos, maximo " + String(MAX_IRRIGATION_DURATION_SEC) + ")</label>"
-            "<input type=\"number\" min=\"0\" max=\"" + String(MAX_IRRIGATION_DURATION_SEC) +
-            "\" name=\"irrigationDurationSec\" value=\"" + String(config.irrigationDurationSec) + "\">"
+        html += "<h2>Duracao da irrigacao</h2>"
+            "<p class=\"muted\">Defina a duracao com numeros inteiros (maximo " + String(MAX_IRRIGATION_DURATION_MIN) + " minutos).</p>"
+            "<div class=\"row\"><div><label>Minutos</label>"
+            "<input type=\"number\" min=\"0\" max=\"" + String(MAX_IRRIGATION_DURATION_MIN) +
+            "\" step=\"1\" name=\"durationMinutes\" value=\"" + String(durationMinutes) + "\"></div>"
+            "<div><label>Segundos</label>"
+            "<input type=\"number\" min=\"0\" max=\"59\" step=\"1\" name=\"durationSeconds\" value=\"" + String(durationSeconds) + "\"></div></div>"
             "<button type=\"submit\">Salvar</button>"
             "</form></div>"
 
-            "<div class=\"card\"><h2>Historico e armazenamento</h2>";
+            "<div class=\"card\"><form method=\"POST\" action=\"" + String(Routes::ADMIN_CONFIG) + "\">"
+            "<h2>Duracao da irrigacao manual</h2>"
+            "<p class=\"muted\">Esta duracao vale somente para o botao da tela local.</p>"
+            "<div class=\"row\"><div><label>Minutos</label>"
+            "<input type=\"number\" min=\"0\" max=\"" + String(MAX_IRRIGATION_DURATION_MIN) +
+            "\" step=\"1\" name=\"manualDurationMinutes\" value=\"" + String(manualDurationMinutes) + "\"></div>"
+            "<div><label>Segundos</label>"
+            "<input type=\"number\" min=\"0\" max=\"59\" step=\"1\" name=\"manualDurationSeconds\" value=\"" + String(manualDurationSeconds) + "\"></div></div>"
+            "<button type=\"submit\">Salvar duracao manual</button>"
+            "</form></div>"
 
-    {
-        size_t usedBytes = storageUsedBytes();
-        size_t totalBytes = storageTotalBytes();
-        uint8_t storagePercent = totalBytes > 0 ? static_cast<uint8_t>((usedBytes * 100ULL) / totalBytes) : 0;
-        html += "<p class=\"muted\" style=\"margin:0 0 8px\">Armazenamento usado: " + String(storagePercent) + "%";
-        if (storagePercent >= STORAGE_WARNING_THRESHOLD_PERCENT) {
-            html += " — <span style=\"color:var(--danger)\">perto de encher</span>";
-        }
-        html += "</p>";
-    }
-
-    html +=
-            "<a class=\"link\" href=\"" + String(Routes::ADMIN_STORAGE) + "\">Ver historico e gerenciar armazenamento &rarr;</a>"
-            "</div>"
-
-            "<a class=\"link\" href=\"" + String(Routes::STATUS) + "\">&larr; Ver status</a>"
-            "</main></body></html>";
-    return html;
-}
-
-// Mesma convenção do relógio do sistema (sem TZ, sem RTC): trata o epoch
-// como campos de calendário "ingênuos" via gmtime_r, sem aplicar fuso —
-// consistente com o que foi digitado em /admin/time.
-String formatDateTime(uint32_t timestamp) {
-    time_t t = static_cast<time_t>(timestamp);
-    struct tm timeinfo;
-    gmtime_r(&t, &timeinfo);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%02d/%02d/%04d %02d:%02d", timeinfo.tm_mday, timeinfo.tm_mon + 1,
-             timeinfo.tm_year + 1900, timeinfo.tm_hour, timeinfo.tm_min);
-    return String(buf);
-}
-
-String buildHistoryCsv() {
-    String csv = "data_hora,irrigated,durationSec,reason\n";
-    size_t count = historyCount();
-    HistoryEntry entry;
-    for (size_t i = 0; i < count; i++) {
-        if (!readHistoryEntry(i, entry)) continue;
-        csv += formatDateTime(entry.timestamp) + "," +
-               (entry.irrigated ? "1" : "0") + "," +
-               String(entry.durationSec) + "," +
-               reasonToString(entry.reason) + "\n";
-    }
-    return csv;
-}
-
-// Aba dedicada de armazenamento (link a partir de /admin — sem autenticacao
-// nesta fase, como as demais rotas). Mostra o uso do SPIFFS, os registros
-// mais recentes do historico numa tabela, e o botao de apagar tudo — com
-// duas confirmacoes em sequencia, ja que essa acao e irreversivel.
-String buildStorageHtml() {
-    size_t usedBytes = storageUsedBytes();
-    size_t totalBytes = storageTotalBytes();
-    uint8_t storagePercent = totalBytes > 0 ? static_cast<uint8_t>((usedBytes * 100ULL) / totalBytes) : 0;
-    size_t count = historyCount();
-
-    String html = "<!DOCTYPE html><html><head>" + htmlHead("Irrigacao - Armazenamento") +
-        "</head><body>"
-        "<header><h1>Armazenamento</h1><p>Irrigacao Comunitaria</p></header>"
-        "<main>";
-
-    if (storagePercent >= STORAGE_WARNING_THRESHOLD_PERCENT) {
-        html += "<div class=\"card\" style=\"border:2px solid var(--danger);\">"
-                "<p style=\"margin:0;color:var(--danger)\">Armazenamento perto de encher — considere "
-                "baixar o CSV e apagar o historico abaixo.</p></div>";
-    }
-
-    html += "<div class=\"card\"><h2>Uso do armazenamento</h2>"
-            "<div class=\"stat\"><span>Config + historico</span><span>" + String(storagePercent) + "% (" +
-            String(usedBytes / 1024) + "KB de " + String(totalBytes / 1024) + "KB)</span></div>"
-            "<div class=\"bar\"><div class=\"bar-fill" +
-            String(storagePercent >= 95 ? " danger" : (storagePercent >= STORAGE_WARNING_THRESHOLD_PERCENT ? " warn" : "")) +
-            "\" style=\"width:" + String(storagePercent) + "%\"></div></div>"
-            "</div>";
-
-    html += "<div class=\"card\"><h2>Historico (" + String(count) + " registros)</h2>";
-    if (count == 0) {
-        html += "<p class=\"muted\">Nenhum evento registrado ainda.</p>";
-    } else {
-        constexpr size_t MAX_ROWS_SHOWN = 50;
-        size_t start = count > MAX_ROWS_SHOWN ? count - MAX_ROWS_SHOWN : 0;
-        if (start > 0) {
-            html += "<p class=\"muted\">Mostrando os " + String(count - start) + " mais recentes de " +
-                    String(count) + ". Baixe o CSV para o historico completo.</p>";
-        }
-        html += "<table style=\"width:100%;border-collapse:collapse;font-size:.85rem\">"
-                "<tr style=\"text-align:left;color:var(--muted)\"><th>Quando</th><th>Resultado</th><th>Duracao</th></tr>";
-        HistoryEntry entry;
-        for (size_t i = start; i < count; i++) {
-            if (!readHistoryEntry(i, entry)) continue;
-            html += "<tr style=\"border-top:1px solid #eef1ee\"><td>" + formatDateTime(entry.timestamp) +
-                    "</td><td>" + reasonToString(entry.reason) + "</td><td>" +
-                    (entry.irrigated ? String(entry.durationSec) + "s" : "--") + "</td></tr>";
-        }
-        html += "</table>";
-    }
-    html += "<a class=\"link\" href=\"" + String(Routes::ADMIN_HISTORY) + "\">Baixar CSV completo</a>"
-
-            "<button type=\"button\" id=\"deleteStep1Btn\" class=\"danger\" onclick=\"startDeleteConfirm()\">"
-            "Apagar todo o historico</button>"
-
-            "<div id=\"deleteConfirmBox\" style=\"display:none;border:2px solid var(--danger);"
-            "border-radius:10px;padding:12px;margin-top:16px\">"
-            "<p style=\"margin:0 0 10px;color:var(--danger);font-size:.9rem\">Tem certeza? Isso apaga "
-            "TODO o historico, sem volta. Baixe o CSV antes se quiser guardar os dados.</p>"
-            "<form method=\"POST\" action=\"" + String(Routes::ADMIN_HISTORY_RESET) + "\">"
-            "<button type=\"submit\" id=\"deleteConfirmBtn\" class=\"danger\" disabled>Aguarde...</button>"
-            "</form>"
-            "<button type=\"button\" onclick=\"cancelDeleteConfirm()\" style=\"width:auto;background:none;"
-            "color:var(--muted);padding:8px 0;margin-top:8px;font-weight:600\">Cancelar</button>"
-            "</div>"
-
-            "</div>"
-            "<a class=\"link\" href=\"" + String(Routes::ADMIN) + "\">&larr; Voltar para administracao</a>"
+            "<a class=\"link\" href=\"" + String(Routes::STATUS) + "\">Voltar ao status local &larr;</a>"
             "</main>"
             "<script>"
-            "var deleteTimer=null;"
-            "function startDeleteConfirm(){"
-            "document.getElementById('deleteStep1Btn').style.display='none';"
-            "document.getElementById('deleteConfirmBox').style.display='block';"
-            "var btn=document.getElementById('deleteConfirmBtn');"
-            "var secondsLeft=5;"
-            "btn.disabled=true;"
-            "btn.textContent='Aguarde '+secondsLeft+'s...';"
-            "deleteTimer=setInterval(function(){"
-            "secondsLeft--;"
-            "if(secondsLeft<=0){"
-            "clearInterval(deleteTimer);"
-            "btn.disabled=false;"
-            "btn.textContent='Confirmar exclusao definitiva';"
-            "}else{"
-            "btn.textContent='Aguarde '+secondsLeft+'s...';"
-            "}"
-            "},1000);"
-            "}"
-            "function cancelDeleteConfirm(){"
-            "if(deleteTimer)clearInterval(deleteTimer);"
-            "document.getElementById('deleteConfirmBox').style.display='none';"
-            "document.getElementById('deleteStep1Btn').style.display='block';"
-            "}"
-            "</script>"
-            "</body></html>";
+            "var projectTimeZone='America/Sao_Paulo';"
+            "function updateRemoteStatus(){fetch('" + String(Routes::STATUS_JSON) + "').then(function(r){return r.json();}).then(function(d){"
+            "document.getElementById('remoteNow').textContent=d.clockSynchronized?new Intl.DateTimeFormat('pt-BR',{timeZone:projectTimeZone,dateStyle:'short',timeStyle:'short'}).format(new Date(d.currentEpoch*1000)):'Aguardando NTP';"
+            "document.getElementById('remoteNetwork').textContent=d.stationConnected?'Conectado ('+d.stationIp+')':'Sem internet';"
+            "document.getElementById('cloudState').textContent=!d.cloudConfigured?'Endpoint nao configurado':d.cloudConnected?'Conectado':'Sem resposta';"
+            "document.getElementById('cloudPending').textContent=d.cloudPending;});}"
+            "function updateCloudHistory(){fetch('" + String(Routes::CLOUD_HISTORY_JSON) + "').then(function(r){return r.json();}).then(function(d){"
+            "if(d.timeZone)projectTimeZone=d.timeZone;"
+            "var rows=document.getElementById('historyRows');rows.textContent='';"
+            "var timeZone=d.timeZone||'America/Sao_Paulo';"
+            "document.getElementById('historyCount').textContent=d.total+' registro(s) no Sheets; exibindo ate 25 recentes.';"
+            "document.getElementById('historyError').textContent=d.ok?'':(d.error||'Aguardando conexao com a planilha.');"
+            "if(d.spreadsheetUrl){var link=document.getElementById('spreadsheetLink');link.href=d.spreadsheetUrl;link.style.display='inline-block';}"
+            "(d.history||[]).forEach(function(item){var row=document.createElement('tr');"
+            "[new Intl.DateTimeFormat('pt-BR',{timeZone:timeZone,dateStyle:'short',timeStyle:'short'}).format(new Date(item.timestamp*1000)),item.irrigated?'SIM':'NÃO',formatDuration(Number(item.durationSec)),item.reason].forEach(function(value){var cell=document.createElement('td');cell.textContent=value;row.appendChild(cell);});rows.appendChild(row);});});}"
+            "updateRemoteStatus();setInterval(updateRemoteStatus,5000);"
+            "updateCloudHistory();setInterval(updateCloudHistory,30000);"
+            "</script></body></html>";
     return html;
 }
 
@@ -426,11 +308,48 @@ uint16_t clampU16(long value, uint16_t lo, uint16_t hi) {
     return static_cast<uint16_t>(value);
 }
 
+float clampDurationMinutes(float value) {
+    if (!(value >= 0.0f)) return 0.0f;
+    if (value > MAX_IRRIGATION_DURATION_MIN) return MAX_IRRIGATION_DURATION_MIN;
+    return value;
+}
+
+uint16_t clampDurationSeconds(long minutes, long seconds) {
+    if (minutes < 0) minutes = 0;
+    if (seconds < 0) seconds = 0;
+    if (seconds > 59) seconds = 59;
+    uint32_t total = static_cast<uint32_t>(minutes) * 60U + static_cast<uint32_t>(seconds);
+    if (total > MAX_IRRIGATION_DURATION_SEC) return MAX_IRRIGATION_DURATION_SEC;
+    return static_cast<uint16_t>(total);
+}
+
+float durationMinutesFromRequest(AsyncWebServerRequest* request, const char* minutesKey,
+                                 const char* secondsKey, const char* legacyKey = nullptr) {
+    if (request->hasParam(minutesKey, true) || request->hasParam(secondsKey, true)) {
+        long minutes = request->hasParam(minutesKey, true)
+                           ? request->getParam(minutesKey, true)->value().toInt()
+                           : 0;
+        long seconds = request->hasParam(secondsKey, true)
+                           ? request->getParam(secondsKey, true)->value().toInt()
+                           : 0;
+        return static_cast<float>(clampDurationSeconds(minutes, seconds)) / 60.0f;
+    }
+    if (legacyKey != nullptr && request->hasParam(legacyKey, true)) {
+        return clampDurationMinutes(request->getParam(legacyKey, true)->value().toFloat());
+    }
+    return -1.0f;
+}
+
 void applyConfigFromRequest(AsyncWebServerRequest* request, IrrigationConfig& config) {
+    bool scheduleSettingsSubmitted = false;
     for (uint8_t i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
         String hourKey = "hour" + String(i);
         String minuteKey = "minute" + String(i);
         String enabledKey = "enabled" + String(i);
+
+        bool slotSubmitted = request->hasParam(hourKey, true) || request->hasParam(minuteKey, true);
+        scheduleSettingsSubmitted = scheduleSettingsSubmitted || slotSubmitted;
+        if (!slotSubmitted) continue;
 
         if (request->hasParam(hourKey, true)) {
             config.schedules[i].hour = clampU8(request->getParam(hourKey, true)->value().toInt(), 0, 23);
@@ -440,57 +359,20 @@ void applyConfigFromRequest(AsyncWebServerRequest* request, IrrigationConfig& co
         }
         config.schedules[i].enabled = request->hasParam(enabledKey, true);
     }
-    config.scheduleCount = MAX_SCHEDULE_SLOTS;
-
-    if (request->hasParam("irrigationDurationSec", true)) {
-        config.irrigationDurationSec = clampU16(
-            request->getParam("irrigationDurationSec", true)->value().toInt(), 0, MAX_IRRIGATION_DURATION_SEC);
+    if (scheduleSettingsSubmitted) {
+        config.scheduleCount = MAX_SCHEDULE_SLOTS;
     }
-}
 
-bool isLeapYear(int year) {
-    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-}
-
-// Valida os campos de calendário antes de aceitar — mktime() normaliza datas
-// fora da faixa (ex: 31/02 vira 03/03) em vez de rejeitar, então a checagem
-// de faixa precisa acontecer antes de chamar mktime().
-bool isValidCalendarDateTime(int year, int month, int day, int hour, int minute) {
-    if (year < 2000 || year > 2099) return false;
-    if (month < 1 || month > 12) return false;
-    static const uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    uint8_t maxDay = daysInMonth[month - 1];
-    if (month == 2 && isLeapYear(year)) maxDay = 29;
-    if (day < 1 || day > maxDay) return false;
-    if (hour < 0 || hour > 23) return false;
-    if (minute < 0 || minute > 59) return false;
-    return true;
-}
-
-// Aplica o horário digitado em /admin ("YYYY-MM-DDTHH:MM", vindo direto do
-// <input type="datetime-local">, sem conversão de fuso no navegador) como o
-// relógio do sistema — workaround pra falta de RTC físico.
-bool applySystemTimeFromDatetimeLocal(const String& value) {
-    int year, month, day, hour, minute;
-    if (sscanf(value.c_str(), "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) != 5) {
-        return false;
+    float requestedDuration = durationMinutesFromRequest(request, "durationMinutes", "durationSeconds",
+                                                         "irrigationDurationMin");
+    if (requestedDuration >= 0.0f) {
+        config.irrigationDurationMin = requestedDuration;
     }
-    if (!isValidCalendarDateTime(year, month, day, hour, minute)) {
-        return false;
+    float requestedManualDuration = durationMinutesFromRequest(request, "manualDurationMinutes",
+                                                               "manualDurationSeconds");
+    if (requestedManualDuration >= 0.0f) {
+        config.manualIrrigationDurationMin = requestedManualDuration;
     }
-    struct tm timeinfo = {};
-    timeinfo.tm_year = year - 1900;
-    timeinfo.tm_mon = month - 1;
-    timeinfo.tm_mday = day;
-    timeinfo.tm_hour = hour;
-    timeinfo.tm_min = minute;
-    timeinfo.tm_sec = 0;
-    time_t epoch = mktime(&timeinfo);
-    if (epoch < 0) {
-        return false;
-    }
-    struct timeval tv = {epoch, 0};
-    return settimeofday(&tv, nullptr) == 0;
 }
 
 // Mapeia o motivo de bloqueio de uma tentativa de irrigação manual para uma
@@ -511,6 +393,7 @@ String blockedNoticeFromQueryValue(const String& value) {
 namespace WebServer {
 
 void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOpen, bool& storageFault,
+           std::function<uint16_t()> remainingValveSeconds,
            std::function<ManualIrrigateResult(uint16_t)> manualIrrigate,
            std::function<void()> stopIrrigation) {
     // AsyncURIMatcher::exact() é necessário aqui: o construtor implícito a
@@ -523,16 +406,27 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
     });
 
     server.on(AsyncURIMatcher::exact(Routes::STATUS_JSON), HTTP_GET,
-              [&config, &valveOpen, &storageFault](AsyncWebServerRequest* request) {
-                  request->send(200, "application/json", buildStatusJson(config, valveOpen, storageFault));
+              [&config, &valveOpen, &storageFault, remainingValveSeconds](AsyncWebServerRequest* request) {
+                  request->send(200, "application/json",
+                                buildStatusJson(config, valveOpen, remainingValveSeconds(), storageFault));
               });
 
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN), HTTP_GET, [&config](AsyncWebServerRequest* request) {
+    server.on(AsyncURIMatcher::exact(Routes::CLOUD_HISTORY_JSON), HTTP_GET,
+              [](AsyncWebServerRequest* request) {
+                  request->send(200, "application/json", CloudHistory::historyJson());
+              });
+
+    server.on(AsyncURIMatcher::exact(Routes::REMOTE), HTTP_GET,
+              [&config, &valveOpen, &storageFault](AsyncWebServerRequest* request) {
         String notice;
         if (request->hasParam("blocked")) {
             notice = blockedNoticeFromQueryValue(request->getParam("blocked")->value());
         }
-        request->send(200, "text/html", buildAdminFormHtml(config, notice));
+        request->send(200, "text/html", buildAdminFormHtml(config, notice, valveOpen, storageFault));
+    });
+
+    server.on(AsyncURIMatcher::exact(Routes::ADMIN), HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->redirect(Routes::REMOTE);
     });
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN_CONFIG), HTTP_POST,
@@ -546,58 +440,31 @@ void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOp
                   request->redirect(Routes::ADMIN);
               });
 
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_TIME), HTTP_POST, [](AsyncWebServerRequest* request) {
-        if (!request->hasParam("datetime", true) ||
-            !applySystemTimeFromDatetimeLocal(request->getParam("datetime", true)->value())) {
-            request->send(400, "text/plain", "Horario invalido");
-            return;
-        }
-        request->redirect(Routes::ADMIN);
-    });
-
     server.on(AsyncURIMatcher::exact(Routes::ADMIN_IRRIGATE), HTTP_POST,
               [&config, manualIrrigate](AsyncWebServerRequest* request) {
-                  uint16_t duration = config.irrigationDurationSec;
-                  if (request->hasParam("durationSec", true)) {
-                      duration = clampU16(request->getParam("durationSec", true)->value().toInt(), 1,
-                                           MAX_IRRIGATION_DURATION_SEC);
+                  uint16_t duration = irrigationDurationMinutesToSeconds(config.manualIrrigationDurationMin);
+                  float requestedDuration = durationMinutesFromRequest(request, "durationMinutes", "durationSeconds",
+                                                                       "durationMin");
+                  if (requestedDuration >= 0.0f) {
+                      duration = irrigationDurationMinutesToSeconds(requestedDuration);
                   }
                   ManualIrrigateResult result = manualIrrigate(duration);
                   if (result == ManualIrrigateResult::BLOCKED_COOLDOWN) {
-                      request->redirect(String(Routes::ADMIN) + "?blocked=cooldown");
+                      request->redirect(String(Routes::STATUS) + "?blocked=cooldown");
                       return;
                   }
                   if (result == ManualIrrigateResult::BLOCKED_DAILY_BUDGET) {
-                      request->redirect(String(Routes::ADMIN) + "?blocked=budget");
+                      request->redirect(String(Routes::STATUS) + "?blocked=budget");
                       return;
                   }
-                  request->redirect(Routes::ADMIN);
+                  request->redirect(Routes::STATUS);
               });
 
     server.on(AsyncURIMatcher::exact(Routes::ADMIN_STOP), HTTP_POST, [stopIrrigation](AsyncWebServerRequest* request) {
         stopIrrigation();
-        request->redirect(Routes::ADMIN);
+        request->redirect(Routes::STATUS);
     });
 
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY), HTTP_GET, [](AsyncWebServerRequest* request) {
-        AsyncWebServerResponse* response = request->beginResponse(200, "text/csv", buildHistoryCsv());
-        response->addHeader("Content-Disposition", "attachment; filename=history.csv");
-        request->send(response);
-    });
-
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_HISTORY_RESET), HTTP_POST,
-              [&storageFault](AsyncWebServerRequest* request) {
-                  if (!clearHistory()) {
-                      storageFault = true;
-                      request->send(500, "text/plain", "Falha ao zerar historico");
-                      return;
-                  }
-                  request->redirect(Routes::ADMIN_STORAGE);
-              });
-
-    server.on(AsyncURIMatcher::exact(Routes::ADMIN_STORAGE), HTTP_GET, [](AsyncWebServerRequest* request) {
-        request->send(200, "text/html", buildStorageHtml());
-    });
 }
 
 }  // namespace WebServer

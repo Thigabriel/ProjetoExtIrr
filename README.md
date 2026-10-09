@@ -1,10 +1,12 @@
 # Irrigação Comunitária
 
-Firmware para um sistema de irrigação automática de uma horta comunitária, rodando inteiramente em um **ESP32**, **offline** — sem depender de internet, servidor remoto ou NTP. Projeto de extensão universitária: a programação está aqui; a montagem física (sensores, válvula, fiação) é responsabilidade de outra equipe.
+Firmware para um sistema de irrigação automática de uma horta comunitária, rodando em um **ESP32**. O equipamento mantém um ponto de acesso local e também pode se conectar ao Wi-Fi do local para sincronizar o relógio via NTP e servir um painel completo na rede. Projeto de extensão universitária: a programação está aqui; a montagem física (sensores, válvula, fiação) é responsabilidade de outra equipe.
 
 ## Como funciona
 
-O ESP32 sobe sua própria rede WiFi (modo Access Point) e serve uma interface web local, acessível em `http://192.168.4.1`. Não há acesso à internet em nenhum momento — toda a lógica de decisão roda no firmware, e a configuração/histórico ficam salvos no armazenamento interno do ESP32 (SPIFFS).
+O ESP32 mantém a rede `Irrigacao-Comunitaria` para a interface simplificada em `http://192.168.4.1` e, em paralelo, conecta-se ao Wi-Fi do local por DHCP para obter a hora por NTP. O IP atribuído pelo roteador ou hotspot aparece no monitor serial; o painel completo fica disponível em `http://<IP-do-ESP32>/remote`. A configuração fica no SPIFFS; os registros de irrigação são enviados ao Google Sheets.
+
+O endereço `/remote` é acessível por dispositivos na mesma rede Wi-Fi do local. Acesso de fora dessa rede exige uma solução de rede adicional, como VPN; não exponha diretamente as portas do ESP32 à internet.
 
 A irrigação dispara por **horário programado**. Nesta fase do projeto não há sensor de umidade instalado, então não existe confirmação por limiar — a válvula abre sempre que um horário ativo bate, respeitando as rotinas de segurança abaixo.
 
@@ -15,7 +17,7 @@ A irrigação dispara por **horário programado**. Nesta fase do projeto não h�
 | ESP32 (DevKit, chip USB-serial CH340) | ✅ em uso |
 | Sensor de umidade capacitivo | ⏸ fora de escopo nesta fase — irrigação roda só por horário, sem sensor |
 | Válvula solenoide (via relé) | 🔲 ainda não montado — mockada pelo LED onboard (GPIO2) |
-| RTC externo (DS3231) | 🔲 ainda não montado — workaround: horário definido manualmente pela interface web (`/admin`), reinicia a cada boot |
+| RTC externo (DS3231) | 🔲 ainda não montado — horário obtido por NTP via Wi-Fi |
 
 Quando o hardware real chegar (válvula, RTC, e eventualmente o sensor), os pontos de mock ficam isolados em `src/main.cpp` (`VALVE_PIN`) — trocar o acionamento sem mexer no resto do firmware.
 
@@ -29,7 +31,7 @@ pio run -t upload --upload-port /dev/ttyUSB0   # grava no ESP32 (confira a porta
 pio device monitor -b 115200              # log serial
 ```
 
-Se mudar algo em `include/Config.h` (ex: número de slots de horário), o layout salvo em SPIFFS fica incompatível com o anterior — apague o filesystem antigo antes de gravar:
+Se mudar algo em `include/Config.h` (ex: número de slots de horário ou unidade da duração), o layout salvo em SPIFFS fica incompatível com o anterior — apague o filesystem antigo antes de gravar:
 
 ```bash
 pio run -t uploadfs   # precisa de uma pasta data/ (pode ser vazia) na raiz do projeto
@@ -41,17 +43,16 @@ pio run -t uploadfs   # precisa de uma pasta data/ (pode ser vazia) na raiz do p
 
 | Rota | Método | Função |
 |---|---|---|
-| `/status` | GET | painel visual: válvula, último evento, horários ativos |
+| `/status` | GET | painel local: data e hora, irrigação manual, parada e última irrigação |
 | `/status.json` | GET | os mesmos dados em JSON (consumido pela página `/status`) |
-| `/admin` | GET | configuração: horário do sistema, horários de irrigação, irrigação manual, parada de emergência, histórico |
-| `/admin/config` | POST | salva horários/duração |
-| `/admin/time` | POST | define o relógio do sistema (workaround sem RTC) |
-| `/admin/irrigate` | POST | abre a válvula imediatamente por N segundos (sujeito a cooldown/orçamento) |
+| `/cloud/history.json` | GET | cache dos últimos registros recebidos do Google Sheets |
+| `/remote` | GET | painel completo: status, histórico do Sheets e configurações |
+| `/admin` | GET | redireciona para `/remote` (compatibilidade) |
+| `/admin/config` | POST | salva horários e durações; a duração manual é editada apenas no painel completo |
+| `/admin/irrigate` | POST | abre a válvula imediatamente pela duração configurada (sujeito a cooldown/orçamento) |
 | `/admin/stop` | POST | fecha a válvula agora (parada de emergência) |
-| `/admin/history` | GET | baixa o histórico em CSV |
-| `/admin/history/reset` | POST | apaga o histórico |
 
-Credenciais padrão da rede WiFi (ver `src/main.cpp` / trocar antes de qualquer uso real): `Irrigacao-Comunitaria` / `irrigacao`.
+O SSID e a senha do Wi-Fi local, assim como a URL e o token do Apps Script, ficam em `include/CloudConfig.h`, que não é versionado: copie `include/CloudConfig.example.h` para `include/CloudConfig.h` e preencha antes de compilar. Siga [docs/GOOGLE_SHEETS_SETUP.md](docs/GOOGLE_SHEETS_SETUP.md) para publicar o endpoint. Credenciais padrão do AP do ESP32: `Irrigacao-Comunitaria` / `irrigacao`.
 
 QR codes prontos pra impressão em `docs/`: `qr-wifi.png` (conecta na rede) e `qr-status.png` (abre a página de status).
 
@@ -59,11 +60,11 @@ QR codes prontos pra impressão em `docs/`: `qr-wifi.png` (conecta na rede) e `q
 
 Sem sensor de umidade nesta fase, a irrigação roda só por horário programado — sem confirmação de que o solo já está úmido. As travas abaixo (fixas no firmware, `include/Config.h`, não editáveis pela interface web) existem pra evitar desperdício de água e dar um jeito de lidar com falhas mesmo assim:
 
-- **Teto absoluto de duração** (`MAX_IRRIGATION_DURATION_SEC`, 300s) — nenhum acionamento, agendado ou manual, ultrapassa esse valor.
+- **Teto absoluto de duração** (`MAX_IRRIGATION_DURATION_MIN`, 5 minutos) — nenhum acionamento, agendado ou manual, ultrapassa esse valor. A interface aceita frações, como `0,167` minuto (aproximadamente 10 segundos).
 - **Cooldown entre acionamentos** (`IRRIGATION_COOLDOWN_SEC`, 10s nesta fase de testes) — bloqueia um novo acionamento enquanto a válvula ainda está aberta ou logo depois dela fechar.
 - **Orçamento diário de água** (`DAILY_WATER_BUDGET_SEC`, 900s) — soma o tempo de válvula aberta no dia; ao atingir o teto, novos acionamentos são recusados até o dia seguinte.
 - **Parada de emergência** (`/admin/stop`) — fecha a válvula imediatamente, independente do que estiver em andamento.
-- **Aviso de falha genérica** em `/status` — se uma gravação em SPIFFS falhar (config ou histórico), a página de status sinaliza o problema e orienta contato com o professor responsável.
+- **Fila cloud limitada a 32 eventos em RAM** — se a rede/endpoint ficar indisponível, os eventos aguardam reenvio; a fila não sobrevive a uma reinicialização.
 
 Tentativas bloqueadas (cooldown ou orçamento diário) ficam registradas no histórico com o motivo (`BLOCKED_COOLDOWN`, `BLOCKED_DAILY_BUDGET`), e uma parada de emergência fica registrada como `EMERGENCY_STOP` — dá pra auditar quando cada trava atuou.
 
@@ -74,17 +75,20 @@ include/          contratos de dados/rotas compartilhados entre os módulos
   Config.h        IrrigationConfig (persistido)
   History.h       HistoryEntry, TriggerReason
   Routes.h        caminhos das rotas HTTP
-  Storage.h       assinatura das funções de persistência (SPIFFS)
+  Storage.h       persistência da configuração (SPIFFS)
+  CloudConfig.example.h  modelo das credenciais (Wi-Fi, URL e token do Apps Script); copiar para CloudConfig.h
+  CloudHistory.h  fila/cache do histórico cloud
 src/
   main.cpp        integra os módulos: setup/loop, mock de válvula, rotinas de segurança
   irrigation_logic.*  decisão de irrigação (horário), função pura
-  storage.cpp     implementação da persistência em SPIFFS
+  storage.cpp     implementação da persistência de configuração em SPIFFS
+  cloud_history.cpp envio assíncrono e cache do Google Sheets
   web_server.*    rotas HTTP, páginas HTML
 docs/             QR codes pra impressão
 ```
 
 ## Limitações conhecidas
 
-- Sem RTC físico: o relógio zera a cada boot/reset; precisa ser reajustado em `/admin` (`/admin/time`).
-- **Sem autenticação em nenhuma rota** (removida de propósito na fase de testes) — qualquer um na rede WiFi do ESP32 consegue configurar/irrigar/apagar histórico. Precisa ser reintroduzida antes de entregar o equipamento pra comunidade.
+- Sem RTC físico: data e hora dependem de conexão Wi-Fi e sincronização NTP; o painel informa quando a sincronização ainda não ocorreu.
+- **Sem autenticação nas rotas do ESP32** (fase de testes) — qualquer pessoa nas redes do equipamento consegue configurar ou irrigar. Proteja o Apps Script com o token descrito no guia e reintroduza autenticação antes da implantação.
 - Sem sensor de umidade: a irrigação não tem confirmação de que o solo já está úmido, só o horário programado — ver Rotinas de segurança acima para as salvaguardas usadas enquanto isso.

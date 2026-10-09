@@ -5,7 +5,7 @@
 // Resultado da decisão de irrigação para o instante avaliado.
 struct IrrigationDecision {
     bool scheduleMatched; // true se algum slot habilitado bate com hour/minute
-    uint16_t durationSec; // config.irrigationDurationSec quando scheduleMatched, senão 0
+    uint16_t durationSec; // duração configurada em minutos, convertida para segundos
 };
 
 // Decide se algum horário programado bate com o instante atual (RTC).

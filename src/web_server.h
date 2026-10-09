@@ -34,6 +34,7 @@ enum class ManualIrrigateResult : uint8_t {
 // independente do que estiver em andamento.
 namespace WebServer {
     void begin(AsyncWebServer& server, IrrigationConfig& config, const bool& valveOpen, bool& storageFault,
+               std::function<uint16_t()> remainingValveSeconds,
                std::function<ManualIrrigateResult(uint16_t durationSec)> manualIrrigate,
                std::function<void()> stopIrrigation);
 }
